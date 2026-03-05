@@ -42,6 +42,8 @@ from nerfstudio.utils import colormaps
 
 from diffusers import StableDiffusionControlNetPipeline, ControlNetModel, UNet2DConditionModel
 from diffusers.schedulers import DDIMScheduler, DDIMInverseScheduler
+import torchvision
+import os
 
 CONSOLE = Console(width=120)
 
@@ -235,6 +237,11 @@ class GaussCtrlPipeline(VanillaPipeline):
                     bg_cntrl_edited_image = edited_image * mask[None] + unedited_image * bg_mask[None] 
 
                 self.datamanager.train_data[global_idx]["image"] = bg_cntrl_edited_image.permute(1,2,0).to(torch.float32) # [512 512 3]
+                # fosteris change 26/02/2026 START, the point is to check the edited images
+                save_dir = "/data/leuven/385/vsc38511/outputs/debug_edited_images"
+                os.makedirs(save_dir, exist_ok=True)
+                torchvision.utils.save_image(bg_cntrl_edited_image, f"{save_dir}/edited_{global_idx:04d}.png")
+                # fosteris change 26/02/2026 end, the point is to check the edited images
         print("#############################")
         CONSOLE.print("Done Editing", style="bold yellow")
         print("#############################")
