@@ -189,15 +189,18 @@ def _render_trajectory_video(
                     if max_idx == -1:
                         max_idx = true_max_idx
 
+                # Fosteris 05/03/2026: disable autocast to prevent BFloat16/Float32 mismatch in gsplat
+                # when rendering original splatfacto checkpoints (GaussCtrlModel handles this internally,
+                # but SplatfactoModel does not)
                 if crop_data is not None:
                     with renderers.background_color_override_context(
                         crop_data.background_color.to(pipeline.device)
-                    ), torch.no_grad():
+                    ), torch.no_grad(), torch.cuda.amp.autocast(enabled=False):
                         outputs = pipeline.model.get_outputs_for_camera(
                             cameras[camera_idx : camera_idx + 1], obb_box=obb_box
                         )
                 else:
-                    with torch.no_grad():
+                    with torch.no_grad(), torch.cuda.amp.autocast(enabled=False):
                         outputs = pipeline.model.get_outputs_for_camera(
                             cameras[camera_idx : camera_idx + 1], obb_box=obb_box
                         )
@@ -469,7 +472,6 @@ class RenderCameraPath(BaseRender):
             eval_num_rays_per_chunk=self.eval_num_rays_per_chunk,
             test_mode="inference",
         )
-
         install_checks.check_ffmpeg_installed()
 
         with open(self.camera_path_filename, "r", encoding="utf-8") as f:
