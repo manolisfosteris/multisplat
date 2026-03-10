@@ -161,38 +161,126 @@ class GaussCtrlPipeline(VanillaPipeline):
             else: 
                 self.update_datasets(cam_idx, rendered_rgb.cpu(), rendered_depth, latent, None)
         
-    def edit_images(self):
-        '''Edit images with ControlNet and AttnAlign''' 
-        # Set up ControlNet and AttnAlign
+    def edit_reference_views_sequential(self, save_dir):
+        '''Edit reference views sequentially: ref_0 is edited with all 4 original ref latents
+        for multi-view quality, then refs 1-3 attend to previously edited refs.
+        Returns stacked z_0 latents and disparities for all edited reference views.'''
         self.pipe.scheduler = self.ddim_scheduler
-        self.pipe.unet.set_attn_processor(
-                        processor=utils.CrossViewAttnProcessor(self_attn_coeff=0.6,
-                        unet_chunk_size=2))
-        self.pipe.controlnet.set_attn_processor(
-                        processor=utils.CrossViewAttnProcessor(self_attn_coeff=0,
-                        unet_chunk_size=2)) 
-        CONSOLE.print("Done Resetting Attention Processor", style="bold blue")
-        
+
+        edited_latents = []    # list of [1, 4, 64, 64] float16 tensors
+        edited_disparities = []  # list of [1, 3, 512, 512] float16 tensors
+
+        # Preload all ref z0s and disps (original unedited) for use in ref_0's joint edit
+        all_ref_z0s = []
+        all_ref_disps = []
+        for ri in self.ref_indices:
+            rd = self.datamanager.train_data[ri]
+            all_ref_disps.append(torch.from_numpy(
+                self.depth2disparity(rd['depth_image']).copy()
+            ).to(torch.float16).to(self.pipe_device))
+            all_ref_z0s.append(torch.from_numpy(
+                rd['z_0_image'].copy()
+            ).to(torch.float16).to(self.pipe_device))
+
+        for k, ref_idx in enumerate(self.ref_indices):
+            CONSOLE.print(f"Sequential ref editing {k+1}/{self.num_ref_views} (view {ref_idx})", style="bold yellow")
+            ref_data = deepcopy(self.datamanager.train_data[ref_idx])
+            ref_disp = all_ref_disps[k]
+            ref_z0 = all_ref_z0s[k]
+
+            if k == 0:
+                # Edit ref_0 with all 4 original ref latents for multi-view context
+                self.pipe.unet.set_attn_processor(
+                    processor=utils.CrossViewAttnProcessor(self_attn_coeff=0.6, unet_chunk_size=2, num_refs=self.num_ref_views))
+                self.pipe.controlnet.set_attn_processor(
+                    processor=utils.CrossViewAttnProcessor(self_attn_coeff=0, unet_chunk_size=2, num_refs=self.num_ref_views))
+                batch_latents = torch.cat(all_ref_z0s, dim=0)   # [num_refs, 4, 64, 64]
+                batch_disp = torch.cat(all_ref_disps, dim=0)    # [num_refs, 3, 512, 512]
+                num_prompts = self.num_ref_views
+                keep_idx = 0  # ref_0 is the first in the batch
+            else:
+                # Edit ref_k with cross-view attention to already-edited refs 0..k-1
+                self.pipe.unet.set_attn_processor(
+                    processor=utils.CrossViewAttnProcessor(self_attn_coeff=0.6, unet_chunk_size=2, num_refs=k))
+                self.pipe.controlnet.set_attn_processor(
+                    processor=utils.CrossViewAttnProcessor(self_attn_coeff=0, unet_chunk_size=2, num_refs=k))
+                prev_latents = torch.cat(edited_latents, dim=0)    # [k, 4, 64, 64]
+                prev_disps = torch.cat(edited_disparities, dim=0)  # [k, 3, 512, 512]
+                batch_latents = torch.cat([prev_latents, ref_z0], dim=0)  # [k+1, 4, 64, 64]
+                batch_disp = torch.cat([prev_disps, ref_disp], dim=0)    # [k+1, 3, 512, 512]
+                num_prompts = k + 1
+                keep_idx = -1  # current ref is the last in the batch
+
+            result_images = self.pipe(
+                prompt=[self.positive_prompt] * num_prompts,
+                negative_prompt=[self.negative_prompts] * num_prompts,
+                latents=batch_latents,
+                image=batch_disp,
+                num_inference_steps=self.num_inference_steps,
+                guidance_scale=self.guidance_scale,
+                controlnet_conditioning_scale=self.controlnet_conditioning_scale,
+                eta=self.eta,
+                output_type='pt',
+            ).images
+
+            edited_img = result_images[keep_idx].cpu()  # [C, H, W], keep only the current ref
+
+            # Apply LangSAM mask if available (keep unedited background, same as target views)
+            if 'mask_image' in ref_data:
+                mask = torch.from_numpy(ref_data['mask_image'])  # [H, W]
+                bg_mask = 1 - mask
+                unedited_ref = ref_data['unedited_image'].permute(2, 0, 1)  # [C, H, W]
+                edited_img = edited_img * mask[None] + unedited_ref * bg_mask[None]
+
+            torchvision.utils.save_image(edited_img, f"{save_dir}/ref_{k:02d}_idx{ref_idx:04d}_edited.png")
+
+            # DDIM-invert the edited image to get a proper noisy latent at t=T
+            edited_img_hwc = edited_img.to(torch.float16).permute(1, 2, 0).to(self.pipe_device)
+            vae_latent = self.image2latent(edited_img_hwc)  # clean latent at t=0
+            self.pipe.scheduler = self.ddim_inverser
+            new_z0, _ = self.pipe(
+                prompt=self.positive_reverse_prompt,
+                num_inference_steps=self.num_inference_steps,
+                latents=vae_latent,
+                image=ref_disp,
+                return_dict=False,
+                guidance_scale=0,
+                output_type='latent',
+            )
+            new_z0 = new_z0.to(torch.float16)  # [1, 4, 64, 64]
+            self.pipe.scheduler = self.ddim_scheduler  # restore for next edit
+
+            edited_latents.append(new_z0)
+            edited_disparities.append(ref_disp)
+
+        ref_z0_torch = torch.cat(edited_latents, dim=0)      # [num_refs, 4, 64, 64]
+        ref_disp_torch = torch.cat(edited_disparities, dim=0)  # [num_refs, 3, 512, 512]
+        return ref_z0_torch, ref_disp_torch
+
+    def edit_images(self, base_dir=None):
+        '''Edit images with ControlNet and AttnAlign'''
+        self.pipe.scheduler = self.ddim_scheduler
+
         print("#############################")
         CONSOLE.print("Start Editing: ", style="bold yellow")
         CONSOLE.print(f"Reference views are {[j+1 for j in self.ref_indices]}", style="bold yellow")
         print("#############################")
-        ref_disparity_list = []
-        ref_z0_list = []
-        for ref_idx in self.ref_indices:
-            ref_data = deepcopy(self.datamanager.train_data[ref_idx]) 
-            ref_disparity = self.depth2disparity(ref_data['depth_image']) 
-            ref_z0 = ref_data['z_0_image']
-            ref_disparity_list.append(ref_disparity)
-            ref_z0_list.append(ref_z0) 
-            
-        ref_disparities = np.concatenate(ref_disparity_list, axis=0)
-        ref_z0s = np.concatenate(ref_z0_list, axis=0)
-        ref_disparity_torch = torch.from_numpy(ref_disparities.copy()).to(torch.float16).to(self.pipe_device)
-        ref_z0_torch = torch.from_numpy(ref_z0s.copy()).to(torch.float16).to(self.pipe_device)
+
+        ref_save_dir = f"/data/leuven/385/vsc38511/outputs/debug_edited_images/{base_dir}" if base_dir is not None else "/data/leuven/385/vsc38511/outputs/debug_edited_images"
+        os.makedirs(ref_save_dir, exist_ok=True)
+
+        # Sequentially edit reference views for consistency
+        ref_z0_torch, ref_disparity_torch = self.edit_reference_views_sequential(ref_save_dir)
+
+        # Reset processor for target view editing
+        self.pipe.unet.set_attn_processor(
+            processor=utils.CrossViewAttnProcessor(self_attn_coeff=0.6, unet_chunk_size=2))
+        self.pipe.controlnet.set_attn_processor(
+            processor=utils.CrossViewAttnProcessor(self_attn_coeff=0, unet_chunk_size=2))
+        CONSOLE.print("Done sequential ref editing, starting target view editing", style="bold blue")
 
         # Edit images in chunk
-        for idx in range(0, len(self.datamanager.train_data), self.chunk_size): 
+        for idx in range(0, len(self.datamanager.train_data), self.chunk_size):
             chunked_data = self.datamanager.train_data[idx: idx+self.chunk_size]
             
             indices = [current_data['image_idx'] for current_data in chunked_data]
@@ -211,7 +299,7 @@ class GaussCtrlPipeline(VanillaPipeline):
             disp_ctrl_chunk = torch.concatenate((ref_disparity_torch, disparities_torch), dim=0)
             latents_chunk = torch.concatenate((ref_z0_torch, latents_torch), dim=0)
             
-            chunk_edited = self.pipe(
+            all_edited = self.pipe(
                                 prompt=[self.positive_prompt] * (self.num_ref_views+len(chunked_data)),
                                 negative_prompt=[self.negative_prompts] * (self.num_ref_views+len(chunked_data)),
                                 latents=latents_chunk,
@@ -221,8 +309,14 @@ class GaussCtrlPipeline(VanillaPipeline):
                                 controlnet_conditioning_scale=self.controlnet_conditioning_scale,
                                 eta=self.eta,
                                 output_type='pt',
-                            ).images[self.num_ref_views:]
-            chunk_edited = chunk_edited.cpu() 
+                            ).images
+            chunk_edited = all_edited[self.num_ref_views:].cpu()
+
+            # Save reference view reconstructions for the first chunk to verify round-trip fidelity
+            if idx == 0:
+                ref_recon = all_edited[:self.num_ref_views].cpu()
+                for ri, recon_img in enumerate(ref_recon):
+                    torchvision.utils.save_image(recon_img, f"{ref_save_dir}/ref_{ri:02d}_idx{self.ref_indices[ri]:04d}_reconstructed.png")
 
             # Insert edited images back to train data for training
             for local_idx, edited_image in enumerate(chunk_edited):
@@ -237,11 +331,7 @@ class GaussCtrlPipeline(VanillaPipeline):
                     bg_cntrl_edited_image = edited_image * mask[None] + unedited_image * bg_mask[None] 
 
                 self.datamanager.train_data[global_idx]["image"] = bg_cntrl_edited_image.permute(1,2,0).to(torch.float32) # [512 512 3]
-                # fosteris change 26/02/2026 START, the point is to check the edited images
-                save_dir = "/data/leuven/385/vsc38511/outputs/debug_edited_images"
-                os.makedirs(save_dir, exist_ok=True)
-                torchvision.utils.save_image(bg_cntrl_edited_image, f"{save_dir}/edited_{global_idx:04d}.png")
-                # fosteris change 26/02/2026 end, the point is to check the edited images
+                torchvision.utils.save_image(bg_cntrl_edited_image, f"{ref_save_dir}/edited_{global_idx:04d}.png")
         print("#############################")
         CONSOLE.print("Done Editing", style="bold yellow")
         print("#############################")

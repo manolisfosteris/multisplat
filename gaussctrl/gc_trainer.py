@@ -75,7 +75,7 @@ class GaussCtrlTrainer(Trainer):
         self._load_checkpoint()
         self.pipeline.render_reverse()
         if self.pipeline.test_mode == "val":
-            self.pipeline.edit_images()
+            self.pipeline.edit_images(base_dir=self.config.experiment_name)
 
         # set up viewer if enabled
         viewer_log_path = self.base_dir / self.config.viewer.relative_log_filename
