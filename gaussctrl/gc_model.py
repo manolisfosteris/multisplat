@@ -144,7 +144,6 @@ class GaussCtrlModel(SplatfactoModel):
         colors_crop = colors_crop.float()
         viewmat = viewmat.float()
         projmat = projmat.float()
-        print(f"DEBUG: means_crop dtype={means_crop.dtype}, scales_crop dtype={scales_crop.dtype}, viewmat dtype={viewmat.dtype}")
 
         self.xys, depths, self.radii, conics, num_tiles_hit, cov3d = project_gaussians(  # type: ignore
             means_crop,
