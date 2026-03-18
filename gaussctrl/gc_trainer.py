@@ -71,6 +71,7 @@ class GaussCtrlTrainer(Trainer):
             local_rank=self.local_rank,
             grad_scaler=self.grad_scaler,
         )
+        self.pipeline.experiment_name = self.config.experiment_name
         self.optimizers = self.setup_optimizers()
         self._load_checkpoint()
         self.pipeline.render_reverse()

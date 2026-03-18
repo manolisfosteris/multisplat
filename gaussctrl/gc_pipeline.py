@@ -57,6 +57,8 @@ class GaussCtrlPipelineConfig(VanillaPipelineConfig):
     """specifies the datamanager config"""
     render_rate: int = 500
     """how many gauss steps for gauss training"""
+    cache_dir: str = ""
+    """If set, save/load render_reverse outputs to/from this directory to skip re-rendering on subsequent runs"""
     edit_prompt: str = ""
     """Positive Prompt"""
     reverse_prompt: str = "" 
@@ -91,6 +93,7 @@ class GaussCtrlPipeline(VanillaPipeline):
     ):
         super().__init__(config, device, test_mode, world_size, local_rank)
         self.test_mode = test_mode
+        self.experiment_name = "default"
         self.langsam = LangSAM()
         
         self.edit_prompt = self.config.edit_prompt
@@ -123,6 +126,9 @@ class GaussCtrlPipeline(VanillaPipeline):
 
     def render_reverse(self):
         '''Render rgb, depth and reverse rgb images back to latents'''
+        if self.config.cache_dir and self._load_render_cache():
+            return
+
         for cam_idx in range(len(self.datamanager.cameras)):
             CONSOLE.print(f"Rendering view {cam_idx}", style="bold yellow")
             current_cam = self.datamanager.cameras[cam_idx].to(self.device)
@@ -158,9 +164,40 @@ class GaussCtrlPipeline(VanillaPipeline):
 
             if self.config.langsam_obj != "":
                 self.update_datasets(cam_idx, rendered_rgb.cpu(), rendered_depth, latent, mask_npy)
-            else: 
+            else:
                 self.update_datasets(cam_idx, rendered_rgb.cpu(), rendered_depth, latent, None)
-        
+
+        if self.config.cache_dir:
+            self._save_render_cache()
+
+    def _save_render_cache(self):
+        '''Save render_reverse outputs to disk for reuse.'''
+        os.makedirs(self.config.cache_dir, exist_ok=True)
+        for cam_idx, data in enumerate(self.datamanager.train_data):
+            np.save(os.path.join(self.config.cache_dir, f"{cam_idx:04d}_depth.npy"), data['depth_image'])
+            np.save(os.path.join(self.config.cache_dir, f"{cam_idx:04d}_z0.npy"), data['z_0_image'])
+            np.save(os.path.join(self.config.cache_dir, f"{cam_idx:04d}_rgb.npy"), data['unedited_image'].numpy())
+            if 'mask_image' in data:
+                np.save(os.path.join(self.config.cache_dir, f"{cam_idx:04d}_mask.npy"), data['mask_image'])
+        CONSOLE.print(f"Saved render cache to {self.config.cache_dir}", style="bold green")
+
+    def _load_render_cache(self):
+        '''Load render_reverse outputs from disk. Returns True if successful.'''
+        first = os.path.join(self.config.cache_dir, "0000_z0.npy")
+        if not os.path.exists(first):
+            CONSOLE.print(f"No render cache found at {self.config.cache_dir}, running render_reverse.", style="bold yellow")
+            return False
+        CONSOLE.print(f"Loading render cache from {self.config.cache_dir}", style="bold green")
+        num_views = len(self.datamanager.train_data)
+        for cam_idx in range(num_views):
+            self.datamanager.train_data[cam_idx]['depth_image'] = np.load(os.path.join(self.config.cache_dir, f"{cam_idx:04d}_depth.npy"))
+            self.datamanager.train_data[cam_idx]['z_0_image'] = np.load(os.path.join(self.config.cache_dir, f"{cam_idx:04d}_z0.npy"))
+            self.datamanager.train_data[cam_idx]['unedited_image'] = torch.from_numpy(np.load(os.path.join(self.config.cache_dir, f"{cam_idx:04d}_rgb.npy")))
+            mask_path = os.path.join(self.config.cache_dir, f"{cam_idx:04d}_mask.npy")
+            if os.path.exists(mask_path):
+                self.datamanager.train_data[cam_idx]['mask_image'] = np.load(mask_path)
+        return True
+
     def edit_images(self):
         '''Edit images with ControlNet and AttnAlign''' 
         # Set up ControlNet and AttnAlign
@@ -237,11 +274,9 @@ class GaussCtrlPipeline(VanillaPipeline):
                     bg_cntrl_edited_image = edited_image * mask[None] + unedited_image * bg_mask[None] 
 
                 self.datamanager.train_data[global_idx]["image"] = bg_cntrl_edited_image.permute(1,2,0).to(torch.float32) # [512 512 3]
-                # fosteris change 26/02/2026 START, the point is to check the edited images
-                save_dir = "/data/leuven/385/vsc38511/outputs/debug_edited_images"
+                save_dir = f"/data/leuven/385/vsc38511/outputs/debug_edited_images/{self.experiment_name}"
                 os.makedirs(save_dir, exist_ok=True)
                 torchvision.utils.save_image(bg_cntrl_edited_image, f"{save_dir}/edited_{global_idx:04d}.png")
-                # fosteris change 26/02/2026 end, the point is to check the edited images
         print("#############################")
         CONSOLE.print("Done Editing", style="bold yellow")
         print("#############################")
