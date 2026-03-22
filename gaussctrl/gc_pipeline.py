@@ -73,7 +73,7 @@ class GaussCtrlPipelineConfig(VanillaPipelineConfig):
     """Batch size for image editing, feel free to reduce to fit your GPU"""
     ref_view_num: int = 4
     """Number of reference frames"""
-    diffusion_ckpt: str = 'CompVis/stable-diffusion-v1-4'
+    diffusion_ckpt: str = 'runwayml/stable-diffusion-v1-5'
     """Diffusion checkpoints"""
     
 
