@@ -110,31 +110,9 @@ class GaussCtrlPipeline(VanillaPipeline):
         self.pipe = StableDiffusionControlNetPipeline.from_pretrained(self.config.diffusion_ckpt, controlnet=controlnet, safety_checker=None, requires_safety_checker=False).to(self.device).to(torch.float16)
         self.pipe.to(self.pipe_device)
 
-        # IP-Adapter: load if reference image path is provided
-        if self.config.ip_adapter_image_path:
-            CONSOLE.print(f"Loading IP-Adapter with scale={self.config.ip_adapter_scale}", style="bold green")
-            self.pipe.load_ip_adapter("h94/IP-Adapter", subfolder="models", weight_name="ip-adapter-plus_sd15.bin")
-            self.pipe.set_ip_adapter_scale(self.config.ip_adapter_scale)
-            ip_image = Image.open(self.config.ip_adapter_image_path).convert("RGB")
-            if self.config.langsam_obj:
-                CONSOLE.print(f"Segmenting '{self.config.langsam_obj}' from IP-Adapter reference image", style="bold green")
-                results = self.langsam.predict([ip_image], [self.config.langsam_obj])
-                result_masks = results[0]["masks"]
-                if len(result_masks) > 0:
-                    mask = result_masks[0]
-                    ip_array = np.array(ip_image)
-                    ip_array[mask == 0] = 255  # white background
-                    ip_image = Image.fromarray(ip_array)
-                    ip_image.save("/data/leuven/385/vsc38511/outputs/debug_edited_images/ip_adapter_segmented.png")
-                    CONSOLE.print("IP-Adapter reference image segmented successfully (saved to debug_edited_images/ip_adapter_segmented.png)", style="bold green")
-                else:
-                    CONSOLE.print(f"Warning: LangSAM found no '{self.config.langsam_obj}' in IP-Adapter image, using full image", style="bold yellow")
-            self.ip_adapter_image = ip_image
-            self.ip_adapter_attn_procs = dict(self.pipe.unet.attn_processors)
-            CONSOLE.print("IP-Adapter loaded successfully", style="bold green")
-        else:
-            self.ip_adapter_image = None
-            self.ip_adapter_attn_procs = None
+        # IP-Adapter: deferred to _load_ip_adapter() (called before edit_images, after render_reverse)
+        self.ip_adapter_image = None
+        self.ip_adapter_attn_procs = None
 
         added_prompt = 'best quality, extremely detailed'
         self.positive_prompt = self.edit_prompt + ', ' + added_prompt
@@ -153,6 +131,31 @@ class GaussCtrlPipeline(VanillaPipeline):
         self.controlnet_conditioning_scale = 1.0
         self.eta = 0.0
         self.chunk_size = self.config.chunk_size
+
+    def _load_ip_adapter(self):
+        """Load IP-Adapter weights and reference image. Called after render_reverse."""
+        if not self.config.ip_adapter_image_path:
+            return
+        CONSOLE.print(f"Loading IP-Adapter with scale={self.config.ip_adapter_scale}", style="bold green")
+        self.pipe.load_ip_adapter("h94/IP-Adapter", subfolder="models", weight_name="ip-adapter-plus_sd15.bin")
+        self.pipe.set_ip_adapter_scale(self.config.ip_adapter_scale)
+        ip_image = Image.open(self.config.ip_adapter_image_path).convert("RGB")
+        if self.config.langsam_obj:
+            CONSOLE.print(f"Segmenting '{self.config.langsam_obj}' from IP-Adapter reference image", style="bold green")
+            results = self.langsam.predict([ip_image], [self.config.langsam_obj])
+            result_masks = results[0]["masks"]
+            if len(result_masks) > 0:
+                mask = result_masks[0]
+                ip_array = np.array(ip_image)
+                ip_array[mask == 0] = 255  # white background
+                ip_image = Image.fromarray(ip_array)
+                ip_image.save("/data/leuven/385/vsc38511/outputs/debug_edited_images/ip_adapter_segmented.png")
+                CONSOLE.print("IP-Adapter reference image segmented successfully", style="bold green")
+            else:
+                CONSOLE.print(f"Warning: LangSAM found no '{self.config.langsam_obj}' in IP-Adapter image, using full image", style="bold yellow")
+        self.ip_adapter_image = ip_image
+        self.ip_adapter_attn_procs = dict(self.pipe.unet.attn_processors)
+        CONSOLE.print("IP-Adapter loaded successfully", style="bold green")
 
     def _build_combined_attn_procs(self, self_attn_coeff, num_refs):
         """Build processor dict: CrossViewAttnProcessor on attn1, IP-Adapter on attn2."""
@@ -188,10 +191,7 @@ class GaussCtrlPipeline(VanillaPipeline):
             disparity = self.depth2disparity_torch(rendered_depth[:,:,0][None]) 
             
             self.pipe.scheduler = self.ddim_inverser
-            render_reverse_kwargs = dict(prompt=self.positive_reverse_prompt, num_inference_steps=self.num_inference_steps, latents=init_latent, image=disparity, return_dict=False, guidance_scale=0, output_type='latent')
-            if self.ip_adapter_image is not None:
-                render_reverse_kwargs['ip_adapter_image'] = self.ip_adapter_image
-            latent, _ = self.pipe(**render_reverse_kwargs)
+            latent, _ = self.pipe(prompt=self.positive_reverse_prompt, num_inference_steps=self.num_inference_steps, latents=init_latent, image=disparity, return_dict=False, guidance_scale=0, output_type='latent')
 
             # LangSAM is optional
             if self.config.langsam_obj != "":
@@ -347,6 +347,7 @@ class GaussCtrlPipeline(VanillaPipeline):
 
     def edit_images(self, base_dir=None):
         '''Edit images with ControlNet and AttnAlign'''
+        self._load_ip_adapter()
         self.pipe.scheduler = self.ddim_scheduler
 
         print("#############################")
