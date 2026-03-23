@@ -75,6 +75,10 @@ class GaussCtrlPipelineConfig(VanillaPipelineConfig):
     """Number of reference frames"""
     diffusion_ckpt: str = 'runwayml/stable-diffusion-v1-5'
     """Diffusion checkpoints"""
+    ip_adapter_image_path: str = ""
+    """Path to reference image for IP-Adapter style guidance (empty = disabled)"""
+    ip_adapter_scale: float = 0.6
+    """IP-Adapter influence weight (0.0=text-only, 1.0=image-only)"""
     
 
 class GaussCtrlPipeline(VanillaPipeline):
@@ -103,8 +107,34 @@ class GaussCtrlPipeline(VanillaPipeline):
         self.ddim_inverser = DDIMInverseScheduler.from_pretrained(self.config.diffusion_ckpt, subfolder="scheduler")
         
         controlnet = ControlNetModel.from_pretrained("lllyasviel/sd-controlnet-depth")
-        self.pipe = StableDiffusionControlNetPipeline.from_pretrained(self.config.diffusion_ckpt, controlnet=controlnet).to(self.device).to(torch.float16)
+        self.pipe = StableDiffusionControlNetPipeline.from_pretrained(self.config.diffusion_ckpt, controlnet=controlnet, safety_checker=None, requires_safety_checker=False).to(self.device).to(torch.float16)
         self.pipe.to(self.pipe_device)
+
+        # IP-Adapter: load if reference image path is provided
+        if self.config.ip_adapter_image_path:
+            CONSOLE.print(f"Loading IP-Adapter with scale={self.config.ip_adapter_scale}", style="bold green")
+            self.pipe.load_ip_adapter("h94/IP-Adapter", subfolder="models", weight_name="ip-adapter-plus_sd15.bin")
+            self.pipe.set_ip_adapter_scale(self.config.ip_adapter_scale)
+            ip_image = Image.open(self.config.ip_adapter_image_path).convert("RGB")
+            if self.config.langsam_obj:
+                CONSOLE.print(f"Segmenting '{self.config.langsam_obj}' from IP-Adapter reference image", style="bold green")
+                results = self.langsam.predict([ip_image], [self.config.langsam_obj])
+                result_masks = results[0]["masks"]
+                if len(result_masks) > 0:
+                    mask = result_masks[0]
+                    ip_array = np.array(ip_image)
+                    ip_array[mask == 0] = 255  # white background
+                    ip_image = Image.fromarray(ip_array)
+                    ip_image.save("/data/leuven/385/vsc38511/outputs/debug_edited_images/ip_adapter_segmented.png")
+                    CONSOLE.print("IP-Adapter reference image segmented successfully (saved to debug_edited_images/ip_adapter_segmented.png)", style="bold green")
+                else:
+                    CONSOLE.print(f"Warning: LangSAM found no '{self.config.langsam_obj}' in IP-Adapter image, using full image", style="bold yellow")
+            self.ip_adapter_image = ip_image
+            self.ip_adapter_attn_procs = dict(self.pipe.unet.attn_processors)
+            CONSOLE.print("IP-Adapter loaded successfully", style="bold green")
+        else:
+            self.ip_adapter_image = None
+            self.ip_adapter_attn_procs = None
 
         added_prompt = 'best quality, extremely detailed'
         self.positive_prompt = self.edit_prompt + ', ' + added_prompt
@@ -123,6 +153,17 @@ class GaussCtrlPipeline(VanillaPipeline):
         self.controlnet_conditioning_scale = 1.0
         self.eta = 0.0
         self.chunk_size = self.config.chunk_size
+
+    def _build_combined_attn_procs(self, self_attn_coeff, num_refs):
+        """Build processor dict: CrossViewAttnProcessor on attn1, IP-Adapter on attn2."""
+        cross_view = utils.CrossViewAttnProcessor(self_attn_coeff=self_attn_coeff, unet_chunk_size=2, num_refs=num_refs)
+        procs = {}
+        for name, proc in self.ip_adapter_attn_procs.items():
+            if name.endswith("attn1.processor"):
+                procs[name] = cross_view
+            else:
+                procs[name] = proc
+        return procs
 
     def render_reverse(self):
         '''Render rgb, depth and reverse rgb images back to latents'''
@@ -147,10 +188,10 @@ class GaussCtrlPipeline(VanillaPipeline):
             disparity = self.depth2disparity_torch(rendered_depth[:,:,0][None]) 
             
             self.pipe.scheduler = self.ddim_inverser
-            latent, _ = self.pipe(prompt=self.positive_reverse_prompt, #  placeholder here, since cfg=0
-                                num_inference_steps=self.num_inference_steps, 
-                                latents=init_latent, 
-                                image=disparity, return_dict=False, guidance_scale=0, output_type='latent')
+            render_reverse_kwargs = dict(prompt=self.positive_reverse_prompt, num_inference_steps=self.num_inference_steps, latents=init_latent, image=disparity, return_dict=False, guidance_scale=0, output_type='latent')
+            if self.ip_adapter_image is not None:
+                render_reverse_kwargs['ip_adapter_image'] = self.ip_adapter_image
+            latent, _ = self.pipe(**render_reverse_kwargs)
 
             # LangSAM is optional
             if self.config.langsam_obj != "":
@@ -226,21 +267,25 @@ class GaussCtrlPipeline(VanillaPipeline):
             ref_z0 = all_ref_z0s[k]
 
             if k == 0:
-                # Edit ref_0 with all 4 original ref latents for multi-view context
+                num_refs_k = self.num_ref_views
+            else:
+                num_refs_k = k
+
+            # Set attention processors: combined (CrossView + IP-Adapter) or CrossView only
+            if self.ip_adapter_image is not None:
+                self.pipe.unet.set_attn_processor(self._build_combined_attn_procs(self_attn_coeff=0.6, num_refs=num_refs_k))
+            else:
                 self.pipe.unet.set_attn_processor(
-                    processor=utils.CrossViewAttnProcessor(self_attn_coeff=0.6, unet_chunk_size=2, num_refs=self.num_ref_views))
-                self.pipe.controlnet.set_attn_processor(
-                    processor=utils.CrossViewAttnProcessor(self_attn_coeff=0, unet_chunk_size=2, num_refs=self.num_ref_views))
+                    processor=utils.CrossViewAttnProcessor(self_attn_coeff=0.6, unet_chunk_size=2, num_refs=num_refs_k))
+            self.pipe.controlnet.set_attn_processor(
+                processor=utils.CrossViewAttnProcessor(self_attn_coeff=0, unet_chunk_size=2, num_refs=num_refs_k))
+
+            if k == 0:
                 batch_latents = torch.cat(all_ref_z0s, dim=0)   # [num_refs, 4, 64, 64]
                 batch_disp = torch.cat(all_ref_disps, dim=0)    # [num_refs, 3, 512, 512]
                 num_prompts = self.num_ref_views
                 keep_idx = 0  # ref_0 is the first in the batch
             else:
-                # Edit ref_k with cross-view attention to already-edited refs 0..k-1
-                self.pipe.unet.set_attn_processor(
-                    processor=utils.CrossViewAttnProcessor(self_attn_coeff=0.6, unet_chunk_size=2, num_refs=k))
-                self.pipe.controlnet.set_attn_processor(
-                    processor=utils.CrossViewAttnProcessor(self_attn_coeff=0, unet_chunk_size=2, num_refs=k))
                 prev_latents = torch.cat(edited_latents, dim=0)    # [k, 4, 64, 64]
                 prev_disps = torch.cat(edited_disparities, dim=0)  # [k, 3, 512, 512]
                 batch_latents = torch.cat([prev_latents, ref_z0], dim=0)  # [k+1, 4, 64, 64]
@@ -248,7 +293,7 @@ class GaussCtrlPipeline(VanillaPipeline):
                 num_prompts = k + 1
                 keep_idx = -1  # current ref is the last in the batch
 
-            result_images = self.pipe(
+            pipe_kwargs = dict(
                 prompt=[self.positive_prompt] * num_prompts,
                 negative_prompt=[self.negative_prompts] * num_prompts,
                 latents=batch_latents,
@@ -258,7 +303,10 @@ class GaussCtrlPipeline(VanillaPipeline):
                 controlnet_conditioning_scale=self.controlnet_conditioning_scale,
                 eta=self.eta,
                 output_type='pt',
-            ).images
+            )
+            if self.ip_adapter_image is not None:
+                pipe_kwargs['ip_adapter_image'] = self.ip_adapter_image
+            result_images = self.pipe(**pipe_kwargs).images
 
             edited_img = result_images[keep_idx].cpu()  # [C, H, W], keep only the current ref
 
@@ -275,7 +323,7 @@ class GaussCtrlPipeline(VanillaPipeline):
             edited_img_hwc = edited_img.to(torch.float16).permute(1, 2, 0).to(self.pipe_device)
             vae_latent = self.image2latent(edited_img_hwc)  # clean latent at t=0
             self.pipe.scheduler = self.ddim_inverser
-            new_z0, _ = self.pipe(
+            inversion_kwargs = dict(
                 prompt=self.positive_reverse_prompt,
                 num_inference_steps=self.num_inference_steps,
                 latents=vae_latent,
@@ -284,6 +332,9 @@ class GaussCtrlPipeline(VanillaPipeline):
                 guidance_scale=0,
                 output_type='latent',
             )
+            if self.ip_adapter_image is not None:
+                inversion_kwargs['ip_adapter_image'] = self.ip_adapter_image
+            new_z0, _ = self.pipe(**inversion_kwargs)
             new_z0 = new_z0.to(torch.float16)  # [1, 4, 64, 64]
             self.pipe.scheduler = self.ddim_scheduler  # restore for next edit
 
@@ -310,8 +361,11 @@ class GaussCtrlPipeline(VanillaPipeline):
         ref_z0_torch, ref_disparity_torch = self.edit_reference_views_sequential(ref_save_dir)
 
         # Reset processor for target view editing
-        self.pipe.unet.set_attn_processor(
-            processor=utils.CrossViewAttnProcessor(self_attn_coeff=0.6, unet_chunk_size=2))
+        if self.ip_adapter_image is not None:
+            self.pipe.unet.set_attn_processor(self._build_combined_attn_procs(self_attn_coeff=0.6, num_refs=self.num_ref_views))
+        else:
+            self.pipe.unet.set_attn_processor(
+                processor=utils.CrossViewAttnProcessor(self_attn_coeff=0.6, unet_chunk_size=2))
         self.pipe.controlnet.set_attn_processor(
             processor=utils.CrossViewAttnProcessor(self_attn_coeff=0, unet_chunk_size=2))
         CONSOLE.print("Done sequential ref editing, starting target view editing", style="bold blue")
@@ -336,17 +390,20 @@ class GaussCtrlPipeline(VanillaPipeline):
             disp_ctrl_chunk = torch.concatenate((ref_disparity_torch, disparities_torch), dim=0)
             latents_chunk = torch.concatenate((ref_z0_torch, latents_torch), dim=0)
             
-            all_edited = self.pipe(
-                                prompt=[self.positive_prompt] * (self.num_ref_views+len(chunked_data)),
-                                negative_prompt=[self.negative_prompts] * (self.num_ref_views+len(chunked_data)),
-                                latents=latents_chunk,
-                                image=disp_ctrl_chunk,
-                                num_inference_steps=self.num_inference_steps,
-                                guidance_scale=self.guidance_scale,
-                                controlnet_conditioning_scale=self.controlnet_conditioning_scale,
-                                eta=self.eta,
-                                output_type='pt',
-                            ).images
+            pipe_kwargs = dict(
+                prompt=[self.positive_prompt] * (self.num_ref_views+len(chunked_data)),
+                negative_prompt=[self.negative_prompts] * (self.num_ref_views+len(chunked_data)),
+                latents=latents_chunk,
+                image=disp_ctrl_chunk,
+                num_inference_steps=self.num_inference_steps,
+                guidance_scale=self.guidance_scale,
+                controlnet_conditioning_scale=self.controlnet_conditioning_scale,
+                eta=self.eta,
+                output_type='pt',
+            )
+            if self.ip_adapter_image is not None:
+                pipe_kwargs['ip_adapter_image'] = self.ip_adapter_image
+            all_edited = self.pipe(**pipe_kwargs).images
             chunk_edited = all_edited[self.num_ref_views:].cpu()
 
             # Save reference view reconstructions for the first chunk to verify round-trip fidelity
