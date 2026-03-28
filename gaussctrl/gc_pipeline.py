@@ -47,6 +47,53 @@ import os
 
 CONSOLE = Console(width=120)
 
+
+def select_reference_views_fvs(cameras, num_refs: int, alpha: float) -> List[int]:
+    """Select reference views using Farthest View Sampling (FVS).
+
+    Greedily picks the most spatially and angularly diverse views.
+    Based on Algorithm 1 from "NeRF Director" (Xiao et al., CVPR 2024).
+    """
+    is_list = isinstance(cameras, list)
+    n = len(cameras)
+
+    # Extract camera positions and viewing directions
+    positions = torch.zeros(n, 3)
+    directions = torch.zeros(n, 3)
+    for i in range(n):
+        cam = cameras[i] if is_list else cameras[i : i + 1]
+        c2w = cam.camera_to_worlds
+        positions[i] = c2w[0, :3, 3]
+        d = -c2w[0, :3, 2]
+        directions[i] = d / d.norm()
+
+    # Pairwise spatial distance
+    diff = positions.unsqueeze(0) - positions.unsqueeze(1)  # [n, n, 3]
+    d_spatial = diff.norm(dim=-1)  # [n, n]
+
+    # Pairwise angular distance
+    cos_sim = torch.clamp(torch.mm(directions, directions.t()), -1.0, 1.0)
+    d_photo = torch.acos(cos_sim)  # [n, n]
+
+    # Combined distance
+    dist = d_spatial + alpha * d_photo  # [n, n]
+
+    # Greedy FVS: start from view 0
+    selected = [0]
+    min_dist_to_S = dist[0].clone()  # min distance from each view to S
+
+    for _ in range(num_refs - 1):
+        # Mask out already selected
+        min_dist_to_S[selected] = -1.0
+        # Pick view with max min-distance to S
+        v_star = int(torch.argmax(min_dist_to_S).item())
+        selected.append(v_star)
+        # Update min distances
+        min_dist_to_S = torch.minimum(min_dist_to_S, dist[v_star])
+
+    return sorted(selected)
+
+
 @dataclass
 class GaussCtrlPipelineConfig(VanillaPipelineConfig):
     """Configuration for pipeline instantiation"""
@@ -79,7 +126,11 @@ class GaussCtrlPipelineConfig(VanillaPipelineConfig):
     """Path to reference image for IP-Adapter style guidance (empty = disabled)"""
     ip_adapter_scale: float = 0.6
     """IP-Adapter influence weight (0.0=text-only, 1.0=image-only)"""
-    
+    ref_view_selection: str = "fvs"
+    """Reference view selection strategy: 'random' or 'fvs'"""
+    fvs_alpha: float = 1.0
+    """Scaling factor for photogrammetric (angular) distance in FVS"""
+
 
 class GaussCtrlPipeline(VanillaPipeline):
     """GaussCtrl pipeline"""
@@ -119,11 +170,17 @@ class GaussCtrlPipeline(VanillaPipeline):
         self.positive_reverse_prompt = self.reverse_prompt + ', ' + added_prompt
         self.negative_prompts = 'longbody, lowres, bad anatomy, bad hands, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality'
         
-        view_num = len(self.datamanager.cameras) 
-        anchors = [(view_num * i) // self.config.ref_view_num for i in range(self.config.ref_view_num)] + [view_num]
-        
-        random.seed(13789)
-        self.ref_indices = [random.randint(anchor, anchors[idx+1]) for idx, anchor in enumerate(anchors[:-1])] 
+        view_num = len(self.datamanager.cameras)
+        if self.config.ref_view_selection == "fvs":
+            self.ref_indices = select_reference_views_fvs(
+                self.datamanager.cameras, self.config.ref_view_num, self.config.fvs_alpha
+            )
+            CONSOLE.print(f"FVS selected reference views: {self.ref_indices}", style="bold green")
+        else:
+            anchors = [(view_num * i) // self.config.ref_view_num for i in range(self.config.ref_view_num)] + [view_num]
+            random.seed(13789)
+            self.ref_indices = [random.randint(anchor, anchors[idx+1]) for idx, anchor in enumerate(anchors[:-1])]
+            CONSOLE.print(f"Random selected reference views: {self.ref_indices}", style="bold yellow")
         self.num_ref_views = len(self.ref_indices)
 
         self.num_inference_steps = self.config.num_inference_steps

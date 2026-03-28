@@ -10,6 +10,18 @@
 | panda_main                | 2026-03-07 | original         | 0.2394     | 0.1739   | 0.7592   | guidance=5, chunk=1, langsam=bear |
 | panda_stable_1_5_ip_cross | 2026-03-23 | ip_adapter+cross | 0.2461     | 0.2049   | 0.7248   | SD1.5, ip_scale=0.6, langsam=bear |
 
+## Scene: face
+
+### Edit: face → joker
+
+| experiment | date       | method           | clip_score | clip_dir | clip_img | notes                                      |
+|------------|------------|------------------|------------|----------|----------|--------------------------------------------|
+| joker_IP   | 2026-03-23 | ip_adapter+cross | 0.2588     | 0.2126   | 0.6618   | SD1.5, ip_scale=0.6, ip_image=joker.webp, langsam=face |
+
+---
+
+## Scene: bear
+
 ### Edit: bear → polar bear
 
 | experiment        | date       | method         | clip_score | clip_dir | clip_img | notes                             |
