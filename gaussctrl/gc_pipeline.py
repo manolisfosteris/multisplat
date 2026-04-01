@@ -194,6 +194,7 @@ class GaussCtrlPipeline(VanillaPipeline):
         if not self.config.ip_adapter_image_path:
             return
         CONSOLE.print(f"Loading IP-Adapter with scale={self.config.ip_adapter_scale}", style="bold green")
+        #loading the IP adapter
         self.pipe.load_ip_adapter("h94/IP-Adapter", subfolder="models", weight_name="ip-adapter-plus_sd15.bin")
         self.pipe.set_ip_adapter_scale(self.config.ip_adapter_scale)
         ip_image = Image.open(self.config.ip_adapter_image_path).convert("RGB")
@@ -215,7 +216,19 @@ class GaussCtrlPipeline(VanillaPipeline):
         CONSOLE.print("IP-Adapter loaded successfully", style="bold green")
 
     def _build_combined_attn_procs(self, self_attn_coeff, num_refs):
-        """Build processor dict: CrossViewAttnProcessor on attn1, IP-Adapter on attn2."""
+      """                                                                             
+      Build a combined attention processor dict that installs both CrossViewAttnProcessor
+      and IP-Adapter processors simultaneously.                                                                                                                                                      
+   
+      In each UNet transformer block there are two attention layers:                                                                                                                                 
+        - attn1 (self-attention): replaced with CrossViewAttnProcessor to enforce
+          multi-view consistency across reference and target frames.                                                                                                                                 
+        - attn2 (cross-attention to text/image): kept as-is from ip_adapter_attn_procs,                                                                                                              
+          so IP-Adapter style guidance from the reference image is preserved.                                                                                                                        
+                                                                                                                                                                                                     
+      Returns a dict suitable for pipe.unet.set_attn_processor().                                                                                                                                    
+      """                                                                                                                                                                                            
+                     
         cross_view = utils.CrossViewAttnProcessor(self_attn_coeff=self_attn_coeff, unet_chunk_size=2, num_refs=num_refs)
         procs = {}
         for name, proc in self.ip_adapter_attn_procs.items():
