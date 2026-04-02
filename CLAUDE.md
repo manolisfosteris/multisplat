@@ -6,7 +6,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 GaussCtrl is a text-driven 3D Gaussian Splatting editing method (ECCV 2024). It edits 3DGS scenes by: (1) rendering all views and inverting them to DDIM latents, (2) editing images using ControlNet+depth with a cross-view attention mechanism (`CrossViewAttnProcessor`) for multi-view consistency, and (3) fine-tuning the 3DGS model on the edited images.
 
-This is a fork with active modifications, primarily in `gc_pipeline.py` and `utils.py`, adding epipolar geometry constraints to the cross-view attention.
+This is a fork with active modifications. The main active branch is `Seq_Ref_IP_Adapter`, which adds:
+- Sequential reference view editing for better multi-view consistency
+- IP-Adapter support for style guidance from a reference image
+- FVS (Farthest View Sampling) reference view selection
+- Render cache to skip re-rendering on subsequent runs
 
 ## Installation
 
@@ -30,31 +34,32 @@ Verify: `ns-train -h`
 ns-train splatfacto --output-dir unedited_models --experiment-name bear nerfstudio-data --data data/bear
 ```
 
-**Run GaussCtrl editing:**
+**Run GaussCtrl editing (full pipeline):**
 ```bash
-ns-train gaussctrl \
-  --load-checkpoint {path/to/step-000029999.ckpt} \
-  --experiment-name EXPERIMENT_NAME \
-  --output-dir outputs \
-  --pipeline.datamanager.data {path/to/data} \
-  --pipeline.edit_prompt "YOUR EDIT PROMPT" \
-  --pipeline.reverse_prompt "DESCRIPTION OF UNEDITED SCENE" \
-  --pipeline.guidance_scale 5 \
-  --pipeline.chunk_size 3 \
-  --pipeline.langsam_obj 'OBJECT'  # optional, omit for environment editing
+ns-train gaussctrl --load-checkpoint {path/to/step-000029999.ckpt} --experiment-name EXPERIMENT_NAME --output-dir outputs --pipeline.datamanager.data {path/to/data} --pipeline.edit_prompt "YOUR EDIT PROMPT" --pipeline.reverse_prompt "DESCRIPTION OF UNEDITED SCENE" --pipeline.guidance_scale 5 --pipeline.chunk_size 1 --pipeline.langsam_obj 'OBJECT' --pipeline.cache_dir {path/to/cache} --pipeline.ip_adapter_image_path {path/to/ref.webp} --pipeline.ip_adapter_scale 0.6
 ```
 
-**View results:**
+**Run diffusion editing only (no 3DGS, P100-compatible):**
 ```bash
-ns-viewer --load-config {outputs/.../config.yml}
+python scripts/edit_from_cache.py --cache_dir {path/to/cache} --output_dir {path/to/output} --edit_prompt "YOUR EDIT PROMPT" --ip_adapter_image_path {path/to/ref.webp} --ip_adapter_scale 0.6 --langsam_obj OBJECT --guidance_scale 5 --chunk_size 1
+```
+
+**Retrain 3DGS from pre-edited images (V100 required):**
+```bash
+python scripts/retrain_from_edited.py --load_checkpoint {path/to/step-000029999.ckpt} --edited_images_dir {path/to/edited/images} --data {path/to/data} --cache_dir {path/to/cache} --experiment_name EXPERIMENT_NAME --output_dir {path/to/output}
 ```
 
 **Render:**
 ```bash
 # Dataset views
 ns-gaussctrl-render dataset --load-config {outputs/.../config.yml} --output_path {render/NAME}
-# Camera path video
-ns-gaussctrl-render camera-path --load-config {outputs/.../config.yml} --camera-path-filename data/NAME/camera_paths/render-path.json --output_path render/NAME.mp4
+# Camera path video (all videos saved to /data/leuven/385/vsc38511/outputs/VIDEOS/)
+ns-gaussctrl-render camera-path --load-config {outputs/.../config.yml} --camera-path-filename data/NAME/camera_paths/render-path.json --output_path /data/leuven/385/vsc38511/outputs/VIDEOS/NAME.mp4
+```
+
+**Evaluate:**
+```bash
+python metrics/evaluate.py --edited_dir {render/NAME/rgb} --original_dir {render/original_SCENE/rgb} --edit_prompt "YOUR EDIT PROMPT" --reverse_prompt "ORIGINAL DESCRIPTION"
 ```
 
 ## Architecture
@@ -63,37 +68,60 @@ The codebase is a NeRFStudio plugin. Entry point registered via `pyproject.toml`
 
 **Execution flow** (`gc_trainer.py:GaussCtrlTrainer.setup`):
 1. Load pretrained splatfacto checkpoint
-2. `pipeline.render_reverse()` — render all training views, run DDIM inversion to get latent `z_0` per view; optionally run LangSAM to get object masks
-3. `pipeline.edit_images()` — edit all views with ControlNet+depth using `CrossViewAttnProcessor`; edited images are written back to `datamanager.train_data[idx]["image"]`
+2. `pipeline.render_reverse()` — render all training views, run DDIM inversion to get latent `z_0` per view; optionally run LangSAM to get object masks; saves/loads from `cache_dir` if set
+3. `pipeline.edit_images()` — edit all views with ControlNet+depth; edited images written back to `datamanager.train_data[idx]["image"]`
 4. Train 3DGS on edited images for `render_rate` (default 500) steps
 
 **Key files:**
-- `gc_pipeline.py` — `GaussCtrlPipeline`: orchestrates render→invert→edit→train loop; contains `render_reverse()`, `edit_images()`, `image2latent()`, `depth2disparity()`
-- `utils.py` — `CrossViewAttnProcessor`: custom diffusers attention processor that blends self-attention with cross-view attention from 4 reference frames; `create_reprojection_mask()`: computes epipolar/reprojection masks from camera intrinsics/extrinsics; `compute_attn()`: applies optional epipolar mask to attention scores
-- `gc_trainer.py` — `GaussCtrlTrainer`: extends NeRFStudio `Trainer`; custom `train()` loop runs only `render_rate` steps (not the full 30k splatfacto schedule)
+- `gc_pipeline.py` — `GaussCtrlPipeline`: orchestrates render→invert→edit→train loop; contains `render_reverse()`, `edit_images()`, `edit_reference_views_sequential()`, `_load_ip_adapter()`, `_build_combined_attn_procs()`
+- `utils.py` — `CrossViewAttnProcessor`: custom diffusers attention processor that replaces UNet `attn1` (self-attention) with cross-view attention from reference frames
+- `gc_trainer.py` — `GaussCtrlTrainer`: extends NeRFStudio `Trainer`; custom `train()` loop runs only `render_rate` steps
 - `gc_model.py` — `GaussCtrlModel`: extends `SplatfactoModel` with LPIPS + L1 losses
-- `gc_datamanager.py` — `GaussCtrlDataManager`: subsamples training views (default: 40 views from 4 subsets of 10); stores per-view `depth_image`, `z_0_image`, `mask_image`, `unedited_image`, `image` in `self.train_data`
-- `gc_dataset.py` — `GCDataset`: loads depth `.npy` files and latent `.npy` files alongside images
+- `gc_datamanager.py` — `GaussCtrlDataManager`: subsamples training views (default: 40 views); stores per-view `depth_image`, `z_0_image`, `mask_image`, `unedited_image`, `image` in `self.train_data`
+- `gc_dataset.py` — `GCDataset`: loads depth `.npy` and latent `.npy` files alongside images
 - `gc_config.py` — Assembles `MethodSpecification` with all optimizer configs; registers as `"gaussctrl"` method
+- `scripts/edit_from_cache.py` — standalone diffusion editing script (no 3DGS, works on P100)
+- `scripts/retrain_from_edited.py` — standalone 3DGS retraining script from pre-edited images (requires V100)
+- `metrics/evaluate.py` — CLIP evaluation script (clip_score, clip_dir, clip_img)
 
 **Cross-view attention** (`utils.py`):
-- `CrossViewAttnProcessor` replaces standard self-attention in UNet; for each token, it attends to tokens from 4 fixed reference views
-- In the `Epipolar` branch (current work): before each attention call, `set_camera_data()` stores camera matrices; inside `__call__`, depth maps are downsampled to match current UNet feature resolution, `create_reprojection_mask()` computes a `[B, N, N]` binary mask, and attention probabilities for target frames are zeroed out for non-corresponding reference pixels then re-normalized
+- `CrossViewAttnProcessor` replaces `attn1` (self-attention) in the UNet; each token attends to tokens from reference views instead of only its own view
+- Critical for multi-view consistency — experiments confirmed that removing it causes near-zero `clip_dir` and poor 3DGS reconstruction
+- IP-Adapter operates on `attn2` (cross-attention) independently; `_build_combined_attn_procs()` merges both without interference
+
+**IP-Adapter integration:**
+- Loaded via `_load_ip_adapter()` at the start of `edit_images()` (deferred from `__init__`)
+- Reference image optionally segmented with LangSAM before use
+- `_build_combined_attn_procs()`: `attn1` → `CrossViewAttnProcessor`, `attn2` → IP-Adapter processors
+- Controlled by `--pipeline.ip_adapter_image_path` and `--pipeline.ip_adapter_scale`
+
+**Sequential reference view editing** (`edit_reference_views_sequential()`):
+- Reference views are edited one-by-one: `ref_0` attends to all original ref latents, subsequent refs attend to already-edited ones
+- Produces edited ref latents that target views then attend to via cross-view attention
 
 **Data flow in `edit_images()`:**
-- Reference views (4 by default) are prepended to each chunk batch
+- Reference views (4 by default, selected via FVS) are prepended to each chunk batch
 - Batch sent to pipe: `[ref_0..ref_3, target_0..target_k]`
 - After diffusion, only `[self.num_ref_views:]` images are kept and stored back
 
 **Important constants/defaults:**
-- `diffusion_ckpt`: `stabilityai/stable-diffusion-xl-base-1.0` (SDXL, upgraded from SD1.4)
-- `controlnet_ckpt`: `diffusers/controlnet-depth-sdxl-1.0`
-- `diffusion_resolution`: 1024 (SDXL native; set to 768 to save VRAM)
-- `ref_view_num`: 4 reference frames
-- `chunk_size`: 1 (SDXL needs more VRAM than SD1.4); increase if GPU allows
-- `subset_num=4`, `sampled_views_every_subset=10` → 40 total training views by default
-- Debug edited images are saved to `/data/leuven/385/vsc38511/outputs/debug_edited_images/` (hardcoded path in `gc_pipeline.py`)
-- VAE scale factor is read dynamically from `self.pipe.vae.config.scaling_factor` (0.13025 for SDXL)
-- Render resolution is decoupled from diffusion resolution: renders at camera res, resized to `diffusion_resolution` for VAE/ControlNet, resized back after editing
-- Prompts are pre-encoded through SDXL's dual text encoders once in `__init__` and reused via `_batch_prompt_embeds()`
-- **Render cache**: SDXL latents are a different shape than SD1.4 — use a separate `cache_dir` when switching models
+- `diffusion_ckpt`: `runwayml/stable-diffusion-v1-5` (SD 1.5)
+- `controlnet_ckpt`: `lllyasviel/sd-controlnet-depth`
+- `ref_view_num`: 4 reference frames (selected via FVS by default)
+- `chunk_size`: 1
+- 40 total training views by default
+- Debug edited images saved to `/data/leuven/385/vsc38511/outputs/debug_edited_images/{experiment_name}/`
+- **Render cache**: cache `.npy` files (depth, z0, rgb, mask) saved per-view as `{idx:04d}_{type}.npy`
+
+## Paths (HPC)
+- Unedited models: `/data/leuven/385/vsc38511/unedited_models/{scene}/`
+- Render cache — bear: `/data/leuven/385/vsc38511/outputs/cache/stable_diffusion_1.5/`
+- Render cache — face: `/data/leuven/385/vsc38511/cache/stable_diffusion_1.5/face/`
+- Edited outputs: `/data/leuven/385/vsc38511/outputs/{scene}/{experiment_name}/`
+- Debug edited images: `/data/leuven/385/vsc38511/outputs/debug_edited_images/{experiment_name}/`
+- Rendered frames: `/data/leuven/385/vsc38511/render/{experiment_name}/rgb/`
+- Original bear renders: `/data/leuven/385/vsc38511/render/original_bear/rgb/`
+- Original face renders: `/data/leuven/385/vsc38511/render/original_face/rgb/`
+- Videos: `/data/leuven/385/vsc38511/outputs/VIDEOS/`
+- Results & experiments: `/data/leuven/385/vsc38511/Results/` (outside git repo, shared across branches)
+- HuggingFace cache: `/scratch/leuven/385/vsc38511/.cache/huggingface/` (set `HF_HOME` to this)
