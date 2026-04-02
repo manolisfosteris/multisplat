@@ -805,7 +805,7 @@ class DatasetRender(BaseRender):
                 TimeElapsedColumn(),
             ) as progress:
                 for camera_idx, (camera, batch) in enumerate(progress.track(dataloader)):
-                    with torch.no_grad():                        
+                    with torch.no_grad(), torch.cuda.amp.autocast(enabled=False):
                         outputs = pipeline.model.get_outputs_for_camera(camera)
                     
                     rendered_output_names = self.rendered_output_names
@@ -843,7 +843,7 @@ class DatasetRender(BaseRender):
                             output_image = (
                                 colormaps.apply_depth_colormap(
                                     output_image,
-                                    accumulation=outputs["accumulation"],
+                                    accumulation=outputs.get("accumulation"),
                                     near_plane=self.depth_near_plane,
                                     far_plane=self.depth_near_plane,
                                     colormap_options=self.colormap_options,
