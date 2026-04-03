@@ -1,6 +1,7 @@
 
 processed_data/
-gaussctrl/__pycache__
+**/__pycache__/
+*.pyc
 test.sh
 test.py
 
