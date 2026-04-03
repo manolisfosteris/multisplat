@@ -216,18 +216,18 @@ class GaussCtrlPipeline(VanillaPipeline):
         CONSOLE.print("IP-Adapter loaded successfully", style="bold green")
 
     def _build_combined_attn_procs(self, self_attn_coeff, num_refs):
-      """                                                                             
-      Build a combined attention processor dict that installs both CrossViewAttnProcessor
-      and IP-Adapter processors simultaneously.                                                                                                                                                      
-   
-      In each UNet transformer block there are two attention layers:                                                                                                                                 
-        - attn1 (self-attention): replaced with CrossViewAttnProcessor to enforce
-          multi-view consistency across reference and target frames.                                                                                                                                 
-        - attn2 (cross-attention to text/image): kept as-is from ip_adapter_attn_procs,                                                                                                              
-          so IP-Adapter style guidance from the reference image is preserved.                                                                                                                        
-                                                                                                                                                                                                     
-      Returns a dict suitable for pipe.unet.set_attn_processor().                                                                                                                                    
-      """                                                                                                                                                                                            
+        """
+        Build a combined attention processor dict that installs both CrossViewAttnProcessor
+        and IP-Adapter processors simultaneously.
+
+        In each UNet transformer block there are two attention layers:
+          - attn1 (self-attention): replaced with CrossViewAttnProcessor to enforce
+            multi-view consistency across reference and target frames.
+          - attn2 (cross-attention to text/image): kept as-is from ip_adapter_attn_procs,
+            so IP-Adapter style guidance from the reference image is preserved.
+
+        Returns a dict suitable for pipe.unet.set_attn_processor().
+        """                                                                                                                                                                                            
                      
         cross_view = utils.CrossViewAttnProcessor(self_attn_coeff=self_attn_coeff, unet_chunk_size=2, num_refs=num_refs)
         procs = {}
