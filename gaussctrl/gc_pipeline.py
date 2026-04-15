@@ -126,6 +126,8 @@ class GaussCtrlPipelineConfig(VanillaPipelineConfig):
     """Path to reference image for IP-Adapter style guidance (empty = disabled)"""
     ip_adapter_scale: float = 0.6
     """IP-Adapter influence weight (0.0=text-only, 1.0=image-only)"""
+    auto_ip_from_refs: bool = False
+    """Auto-select best edited reference view as IP-Adapter input (requires ip_adapter_image_path to be empty)"""
     ref_view_selection: str = "fvs"
     """Reference view selection strategy: 'random' or 'fvs'"""
     fvs_alpha: float = 1.0
@@ -214,6 +216,60 @@ class GaussCtrlPipeline(VanillaPipeline):
         self.ip_adapter_image = ip_image
         self.ip_adapter_attn_procs = dict(self.pipe.unet.attn_processors)
         CONSOLE.print("IP-Adapter loaded successfully", style="bold green")
+
+    def _auto_select_ip_from_refs(self, ref_save_dir: str):
+        """Score edited reference views with ImageReward and use the best one as IP-Adapter input."""
+        CONSOLE.print("Auto-selecting best edited reference view for IP-Adapter...", style="bold green")
+
+        # Collect edited ref paths
+        ref_paths = []
+        for k, ref_idx in enumerate(self.ref_indices):
+            path = f"{ref_save_dir}/ref_{k:02d}_idx{ref_idx:04d}_edited.png"
+            ref_paths.append(path)
+
+        # Score with ImageReward
+        import ImageReward as RM
+        reward_model = RM.load("ImageReward-v1.0", download_root="/scratch/leuven/385/vsc38511/.cache/ImageReward")
+
+        best_score = float('-inf')
+        best_path = ref_paths[0]
+        for path in ref_paths:
+            with torch.cuda.amp.autocast(enabled=False):
+                score = reward_model.score(self.edit_prompt, path)
+            CONSOLE.print(f"  ImageReward | {os.path.basename(path)}: {score:.4f}", style="dim")
+            if score > best_score:
+                best_score = score
+                best_path = path
+
+        # Free VRAM
+        del reward_model
+        torch.cuda.empty_cache()
+
+        CONSOLE.print(f"Selected {os.path.basename(best_path)} (score={best_score:.4f}) as IP-Adapter reference", style="bold green")
+
+        # Load IP-Adapter weights
+        self.pipe.load_ip_adapter("h94/IP-Adapter", subfolder="models", weight_name="ip-adapter-plus_sd15.bin")
+        self.pipe.set_ip_adapter_scale(self.config.ip_adapter_scale)
+
+        # Load and optionally segment the best image
+        ip_image = Image.open(best_path).convert("RGB")
+        if self.config.langsam_obj:
+            CONSOLE.print(f"Segmenting '{self.config.langsam_obj}' from auto-selected IP-Adapter image", style="bold green")
+            results = self.langsam.predict([ip_image], [self.config.langsam_obj])
+            result_masks = results[0]["masks"]
+            if len(result_masks) > 0:
+                mask = result_masks[0]
+                ip_array = np.array(ip_image)
+                ip_array[mask == 0] = 255
+                ip_image = Image.fromarray(ip_array)
+            else:
+                CONSOLE.print(f"Warning: LangSAM found no '{self.config.langsam_obj}', using full image", style="bold yellow")
+
+        self.ip_adapter_image = ip_image
+        self.ip_adapter_attn_procs = dict(self.pipe.unet.attn_processors)
+        ip_image.save(f"{ref_save_dir}/ip_adapter_input.png")
+        CONSOLE.print(f"IP-Adapter input saved to {ref_save_dir}/ip_adapter_input.png", style="bold green")
+        CONSOLE.print("IP-Adapter loaded from auto-selected reference", style="bold green")
 
     def _build_combined_attn_procs(self, self_attn_coeff, num_refs):
         """
@@ -430,6 +486,10 @@ class GaussCtrlPipeline(VanillaPipeline):
 
         # Sequentially edit reference views for consistency
         ref_z0_torch, ref_disparity_torch = self.edit_reference_views_sequential(ref_save_dir)
+
+        # Auto-select best edited ref as IP-Adapter input if configured
+        if self.ip_adapter_image is None and self.config.auto_ip_from_refs:
+            self._auto_select_ip_from_refs(ref_save_dir)
 
         # Reset processor for target view editing
         if self.ip_adapter_image is not None:
