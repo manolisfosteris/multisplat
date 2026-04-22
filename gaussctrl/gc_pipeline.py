@@ -112,6 +112,8 @@ class GaussCtrlPipelineConfig(VanillaPipelineConfig):
     """DDIM Inversion Prompt"""
     langsam_obj: str = ""
     """The object to be edited"""
+    ip_langsam_obj: str = ""
+    """Object to segment in IP-Adapter reference image (defaults to langsam_obj if empty, 'none' to disable)"""
     guidance_scale: float = 5
     """Classifier Free Guidance"""
     num_inference_steps: int = 20
@@ -200,9 +202,12 @@ class GaussCtrlPipeline(VanillaPipeline):
         self.pipe.load_ip_adapter("h94/IP-Adapter", subfolder="models", weight_name="ip-adapter-plus_sd15.bin")
         self.pipe.set_ip_adapter_scale(self.config.ip_adapter_scale)
         ip_image = Image.open(self.config.ip_adapter_image_path).convert("RGB")
-        if self.config.langsam_obj:
-            CONSOLE.print(f"Segmenting '{self.config.langsam_obj}' from IP-Adapter reference image", style="bold green")
-            results = self.langsam.predict([ip_image], [self.config.langsam_obj])
+        ip_seg_obj = self.config.ip_langsam_obj if self.config.ip_langsam_obj else self.config.langsam_obj
+        if ip_seg_obj == "none":
+            ip_seg_obj = ""
+        if ip_seg_obj:
+            CONSOLE.print(f"Segmenting '{ip_seg_obj}' from IP-Adapter reference image", style="bold green")
+            results = self.langsam.predict([ip_image], [ip_seg_obj])
             result_masks = results[0]["masks"]
             if len(result_masks) > 0:
                 mask = result_masks[0]
@@ -212,7 +217,7 @@ class GaussCtrlPipeline(VanillaPipeline):
                 ip_image.save("/data/leuven/385/vsc38511/outputs/debug_edited_images/ip_adapter_segmented.png")
                 CONSOLE.print("IP-Adapter reference image segmented successfully", style="bold green")
             else:
-                CONSOLE.print(f"Warning: LangSAM found no '{self.config.langsam_obj}' in IP-Adapter image, using full image", style="bold yellow")
+                CONSOLE.print(f"Warning: LangSAM found no '{ip_seg_obj}' in IP-Adapter image, using full image", style="bold yellow")
         self.ip_adapter_image = ip_image
         self.ip_adapter_attn_procs = dict(self.pipe.unet.attn_processors)
         CONSOLE.print("IP-Adapter loaded successfully", style="bold green")
@@ -253,9 +258,12 @@ class GaussCtrlPipeline(VanillaPipeline):
 
         # Load and optionally segment the best image
         ip_image = Image.open(best_path).convert("RGB")
-        if self.config.langsam_obj:
-            CONSOLE.print(f"Segmenting '{self.config.langsam_obj}' from auto-selected IP-Adapter image", style="bold green")
-            results = self.langsam.predict([ip_image], [self.config.langsam_obj])
+        ip_seg_obj = self.config.ip_langsam_obj if self.config.ip_langsam_obj else self.config.langsam_obj
+        if ip_seg_obj == "none":
+            ip_seg_obj = ""
+        if ip_seg_obj:
+            CONSOLE.print(f"Segmenting '{ip_seg_obj}' from auto-selected IP-Adapter image", style="bold green")
+            results = self.langsam.predict([ip_image], [ip_seg_obj])
             result_masks = results[0]["masks"]
             if len(result_masks) > 0:
                 mask = result_masks[0]
@@ -263,7 +271,7 @@ class GaussCtrlPipeline(VanillaPipeline):
                 ip_array[mask == 0] = 255
                 ip_image = Image.fromarray(ip_array)
             else:
-                CONSOLE.print(f"Warning: LangSAM found no '{self.config.langsam_obj}', using full image", style="bold yellow")
+                CONSOLE.print(f"Warning: LangSAM found no '{ip_seg_obj}', using full image", style="bold yellow")
 
         self.ip_adapter_image = ip_image
         self.ip_adapter_attn_procs = dict(self.pipe.unet.attn_processors)
