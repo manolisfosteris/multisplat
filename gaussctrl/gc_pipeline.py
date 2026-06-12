@@ -47,6 +47,53 @@ import os
 
 CONSOLE = Console(width=120)
 
+
+def select_reference_views_fvs(cameras, num_refs: int, alpha: float) -> List[int]:
+    """Select reference views using Farthest View Sampling (FVS).
+
+    Greedily picks the most spatially and angularly diverse views.
+    Based on Algorithm 1 from "NeRF Director" (Xiao et al., CVPR 2024).
+    """
+    is_list = isinstance(cameras, list)
+    n = len(cameras)
+
+    # Extract camera positions and viewing directions
+    positions = torch.zeros(n, 3)
+    directions = torch.zeros(n, 3)
+    for i in range(n):
+        cam = cameras[i] if is_list else cameras[i : i + 1]
+        c2w = cam.camera_to_worlds
+        positions[i] = c2w[0, :3, 3]
+        d = -c2w[0, :3, 2]
+        directions[i] = d / d.norm()
+
+    # Pairwise spatial distance
+    diff = positions.unsqueeze(0) - positions.unsqueeze(1)  # [n, n, 3]
+    d_spatial = diff.norm(dim=-1)  # [n, n]
+
+    # Pairwise angular distance
+    cos_sim = torch.clamp(torch.mm(directions, directions.t()), -1.0, 1.0)
+    d_photo = torch.acos(cos_sim)  # [n, n]
+
+    # Combined distance
+    dist = d_spatial + alpha * d_photo  # [n, n]
+
+    # Greedy FVS: start from view 0
+    selected = [0]
+    min_dist_to_S = dist[0].clone()  # min distance from each view to S
+
+    for _ in range(num_refs - 1):
+        # Mask out already selected
+        min_dist_to_S[selected] = -1.0
+        # Pick view with max min-distance to S
+        v_star = int(torch.argmax(min_dist_to_S).item())
+        selected.append(v_star)
+        # Update min distances
+        min_dist_to_S = torch.minimum(min_dist_to_S, dist[v_star])
+
+    return sorted(selected)
+
+
 @dataclass
 class GaussCtrlPipelineConfig(VanillaPipelineConfig):
     """Configuration for pipeline instantiation"""
@@ -65,6 +112,8 @@ class GaussCtrlPipelineConfig(VanillaPipelineConfig):
     """DDIM Inversion Prompt"""
     langsam_obj: str = ""
     """The object to be edited"""
+    ip_langsam_obj: str = ""
+    """Object to segment in IP-Adapter reference image (defaults to langsam_obj if empty, 'none' to disable)"""
     guidance_scale: float = 5
     """Classifier Free Guidance"""
     num_inference_steps: int = 20
@@ -75,7 +124,17 @@ class GaussCtrlPipelineConfig(VanillaPipelineConfig):
     """Number of reference frames"""
     diffusion_ckpt: str = 'runwayml/stable-diffusion-v1-5'
     """Diffusion checkpoints"""
-    
+    ip_adapter_image_path: str = ""
+    """Path to reference image for IP-Adapter style guidance (empty = disabled)"""
+    ip_adapter_scale: float = 0.6
+    """IP-Adapter influence weight (0.0=text-only, 1.0=image-only)"""
+    auto_ip_from_refs: bool = False
+    """Auto-select best edited reference view as IP-Adapter input (requires ip_adapter_image_path to be empty)"""
+    ref_view_selection: str = "fvs"
+    """Reference view selection strategy: 'random' or 'fvs'"""
+    fvs_alpha: float = 1.0
+    """Scaling factor for photogrammetric (angular) distance in FVS"""
+
 
 class GaussCtrlPipeline(VanillaPipeline):
     """GaussCtrl pipeline"""
@@ -103,19 +162,29 @@ class GaussCtrlPipeline(VanillaPipeline):
         self.ddim_inverser = DDIMInverseScheduler.from_pretrained(self.config.diffusion_ckpt, subfolder="scheduler")
         
         controlnet = ControlNetModel.from_pretrained("lllyasviel/sd-controlnet-depth")
-        self.pipe = StableDiffusionControlNetPipeline.from_pretrained(self.config.diffusion_ckpt, controlnet=controlnet).to(self.device).to(torch.float16)
+        self.pipe = StableDiffusionControlNetPipeline.from_pretrained(self.config.diffusion_ckpt, controlnet=controlnet, safety_checker=None, requires_safety_checker=False).to(self.device).to(torch.float16)
         self.pipe.to(self.pipe_device)
+
+        # IP-Adapter: deferred to _load_ip_adapter() (called before edit_images, after render_reverse)
+        self.ip_adapter_image = None
+        self.ip_adapter_attn_procs = None
 
         added_prompt = 'best quality, extremely detailed'
         self.positive_prompt = self.edit_prompt + ', ' + added_prompt
         self.positive_reverse_prompt = self.reverse_prompt + ', ' + added_prompt
         self.negative_prompts = 'longbody, lowres, bad anatomy, bad hands, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality'
         
-        view_num = len(self.datamanager.cameras) 
-        anchors = [(view_num * i) // self.config.ref_view_num for i in range(self.config.ref_view_num)] + [view_num]
-        
-        random.seed(13789)
-        self.ref_indices = [random.randint(anchor, anchors[idx+1]) for idx, anchor in enumerate(anchors[:-1])] 
+        view_num = len(self.datamanager.cameras)
+        if self.config.ref_view_selection == "fvs":
+            self.ref_indices = select_reference_views_fvs(
+                self.datamanager.cameras, self.config.ref_view_num, self.config.fvs_alpha
+            )
+            CONSOLE.print(f"FVS selected reference views: {self.ref_indices}", style="bold green")
+        else:
+            anchors = [(view_num * i) // self.config.ref_view_num for i in range(self.config.ref_view_num)] + [view_num]
+            random.seed(13789)
+            self.ref_indices = [random.randint(anchor, anchors[idx+1]) for idx, anchor in enumerate(anchors[:-1])]
+            CONSOLE.print(f"Random selected reference views: {self.ref_indices}", style="bold yellow")
         self.num_ref_views = len(self.ref_indices)
 
         self.num_inference_steps = self.config.num_inference_steps
@@ -123,6 +192,115 @@ class GaussCtrlPipeline(VanillaPipeline):
         self.controlnet_conditioning_scale = 1.0
         self.eta = 0.0
         self.chunk_size = self.config.chunk_size
+
+    def _load_ip_adapter(self):
+        """Load IP-Adapter weights and reference image. Called after render_reverse."""
+        if not self.config.ip_adapter_image_path:
+            return
+        CONSOLE.print(f"Loading IP-Adapter with scale={self.config.ip_adapter_scale}", style="bold green")
+        #loading the IP adapter
+        self.pipe.load_ip_adapter("h94/IP-Adapter", subfolder="models", weight_name="ip-adapter-plus_sd15.bin")
+        self.pipe.set_ip_adapter_scale(self.config.ip_adapter_scale)
+        ip_image = Image.open(self.config.ip_adapter_image_path).convert("RGB")
+        ip_seg_obj = self.config.ip_langsam_obj if self.config.ip_langsam_obj else self.config.langsam_obj
+        if ip_seg_obj == "none":
+            ip_seg_obj = ""
+        if ip_seg_obj:
+            CONSOLE.print(f"Segmenting '{ip_seg_obj}' from IP-Adapter reference image", style="bold green")
+            results = self.langsam.predict([ip_image], [ip_seg_obj])
+            result_masks = results[0]["masks"]
+            if len(result_masks) > 0:
+                mask = result_masks[0]
+                ip_array = np.array(ip_image)
+                ip_array[mask == 0] = 255  # white background
+                ip_image = Image.fromarray(ip_array)
+                ip_image.save("/data/leuven/385/vsc38511/outputs/debug_edited_images/ip_adapter_segmented.png")
+                CONSOLE.print("IP-Adapter reference image segmented successfully", style="bold green")
+            else:
+                CONSOLE.print(f"Warning: LangSAM found no '{ip_seg_obj}' in IP-Adapter image, using full image", style="bold yellow")
+        self.ip_adapter_image = ip_image
+        self.ip_adapter_attn_procs = dict(self.pipe.unet.attn_processors)
+        CONSOLE.print("IP-Adapter loaded successfully", style="bold green")
+
+    def _auto_select_ip_from_refs(self, ref_save_dir: str):
+        """Score edited reference views with ImageReward and use the best one as IP-Adapter input."""
+        CONSOLE.print("Auto-selecting best edited reference view for IP-Adapter...", style="bold green")
+
+        # Collect edited ref paths
+        ref_paths = []
+        for k, ref_idx in enumerate(self.ref_indices):
+            path = f"{ref_save_dir}/ref_{k:02d}_idx{ref_idx:04d}_edited.png"
+            ref_paths.append(path)
+
+        # Score with ImageReward
+        import ImageReward as RM
+        reward_model = RM.load("ImageReward-v1.0", download_root="/scratch/leuven/385/vsc38511/.cache/ImageReward")
+
+        best_score = float('-inf')
+        best_path = ref_paths[0]
+        for path in ref_paths:
+            with torch.cuda.amp.autocast(enabled=False):
+                score = reward_model.score(self.edit_prompt, path)
+            CONSOLE.print(f"  ImageReward | {os.path.basename(path)}: {score:.4f}", style="dim")
+            if score > best_score:
+                best_score = score
+                best_path = path
+
+        # Free VRAM
+        del reward_model
+        torch.cuda.empty_cache()
+
+        CONSOLE.print(f"Selected {os.path.basename(best_path)} (score={best_score:.4f}) as IP-Adapter reference", style="bold green")
+
+        # Load IP-Adapter weights
+        self.pipe.load_ip_adapter("h94/IP-Adapter", subfolder="models", weight_name="ip-adapter-plus_sd15.bin")
+        self.pipe.set_ip_adapter_scale(self.config.ip_adapter_scale)
+
+        # Load and optionally segment the best image
+        ip_image = Image.open(best_path).convert("RGB")
+        ip_seg_obj = self.config.ip_langsam_obj if self.config.ip_langsam_obj else self.config.langsam_obj
+        if ip_seg_obj == "none":
+            ip_seg_obj = ""
+        if ip_seg_obj:
+            CONSOLE.print(f"Segmenting '{ip_seg_obj}' from auto-selected IP-Adapter image", style="bold green")
+            results = self.langsam.predict([ip_image], [ip_seg_obj])
+            result_masks = results[0]["masks"]
+            if len(result_masks) > 0:
+                mask = result_masks[0]
+                ip_array = np.array(ip_image)
+                ip_array[mask == 0] = 255
+                ip_image = Image.fromarray(ip_array)
+            else:
+                CONSOLE.print(f"Warning: LangSAM found no '{ip_seg_obj}', using full image", style="bold yellow")
+
+        self.ip_adapter_image = ip_image
+        self.ip_adapter_attn_procs = dict(self.pipe.unet.attn_processors)
+        ip_image.save(f"{ref_save_dir}/ip_adapter_input.png")
+        CONSOLE.print(f"IP-Adapter input saved to {ref_save_dir}/ip_adapter_input.png", style="bold green")
+        CONSOLE.print("IP-Adapter loaded from auto-selected reference", style="bold green")
+
+    def _build_combined_attn_procs(self, self_attn_coeff, num_refs):
+        """
+        Build a combined attention processor dict that installs both CrossViewAttnProcessor
+        and IP-Adapter processors simultaneously.
+
+        In each UNet transformer block there are two attention layers:
+          - attn1 (self-attention): replaced with CrossViewAttnProcessor to enforce
+            multi-view consistency across reference and target frames.
+          - attn2 (cross-attention to text/image): kept as-is from ip_adapter_attn_procs,
+            so IP-Adapter style guidance from the reference image is preserved.
+
+        Returns a dict suitable for pipe.unet.set_attn_processor().
+        """                                                                                                                                                                                            
+                     
+        cross_view = utils.CrossViewAttnProcessor(self_attn_coeff=self_attn_coeff, unet_chunk_size=2, num_refs=num_refs)
+        procs = {}
+        for name, proc in self.ip_adapter_attn_procs.items():
+            if name.endswith("attn1.processor"):
+                procs[name] = cross_view
+            else:
+                procs[name] = proc
+        return procs
 
     def render_reverse(self):
         '''Render rgb, depth and reverse rgb images back to latents'''
@@ -147,10 +325,7 @@ class GaussCtrlPipeline(VanillaPipeline):
             disparity = self.depth2disparity_torch(rendered_depth[:,:,0][None]) 
             
             self.pipe.scheduler = self.ddim_inverser
-            latent, _ = self.pipe(prompt=self.positive_reverse_prompt, #  placeholder here, since cfg=0
-                                num_inference_steps=self.num_inference_steps, 
-                                latents=init_latent, 
-                                image=disparity, return_dict=False, guidance_scale=0, output_type='latent')
+            latent, _ = self.pipe(prompt=self.positive_reverse_prompt, num_inference_steps=self.num_inference_steps, latents=init_latent, image=disparity, return_dict=False, guidance_scale=0, output_type='latent')
 
             # LangSAM is optional
             if self.config.langsam_obj != "":
@@ -198,38 +373,144 @@ class GaussCtrlPipeline(VanillaPipeline):
                 self.datamanager.train_data[cam_idx]['mask_image'] = np.load(mask_path)
         return True
 
-    def edit_images(self):
-        '''Edit images with ControlNet and AttnAlign''' 
-        # Set up ControlNet and AttnAlign
+    def edit_reference_views_sequential(self, save_dir):
+        '''Edit reference views sequentially: ref_0 is edited with all 4 original ref latents
+        for multi-view quality, then refs 1-3 attend to previously edited refs.
+        Returns stacked z_0 latents and disparities for all edited reference views.'''
         self.pipe.scheduler = self.ddim_scheduler
-        self.pipe.unet.set_attn_processor(
-                        processor=utils.CrossViewAttnProcessor(self_attn_coeff=0.6,
-                        unet_chunk_size=2))
-        self.pipe.controlnet.set_attn_processor(
-                        processor=utils.CrossViewAttnProcessor(self_attn_coeff=0,
-                        unet_chunk_size=2)) 
-        CONSOLE.print("Done Resetting Attention Processor", style="bold blue")
-        
+
+        edited_latents = []    # list of [1, 4, 64, 64] float16 tensors
+        edited_disparities = []  # list of [1, 3, 512, 512] float16 tensors
+
+        # Preload all ref z0s and disps (original unedited) for use in ref_0's joint edit
+        all_ref_z0s = []
+        all_ref_disps = []
+        for ri in self.ref_indices:
+            rd = self.datamanager.train_data[ri]
+            all_ref_disps.append(torch.from_numpy(
+                self.depth2disparity(rd['depth_image']).copy()
+            ).to(torch.float16).to(self.pipe_device))
+            all_ref_z0s.append(torch.from_numpy(
+                rd['z_0_image'].copy()
+            ).to(torch.float16).to(self.pipe_device))
+
+        for k, ref_idx in enumerate(self.ref_indices):
+            CONSOLE.print(f"Sequential ref editing {k+1}/{self.num_ref_views} (view {ref_idx})", style="bold yellow")
+            ref_data = deepcopy(self.datamanager.train_data[ref_idx])
+            ref_disp = all_ref_disps[k]
+            ref_z0 = all_ref_z0s[k]
+
+            if k == 0:
+                num_refs_k = self.num_ref_views
+            else:
+                num_refs_k = k
+
+            # Set attention processors: combined (CrossView + IP-Adapter) or CrossView only
+            if self.ip_adapter_image is not None:
+                self.pipe.unet.set_attn_processor(self._build_combined_attn_procs(self_attn_coeff=0.6, num_refs=num_refs_k))
+            else:
+                self.pipe.unet.set_attn_processor(
+                    processor=utils.CrossViewAttnProcessor(self_attn_coeff=0.6, unet_chunk_size=2, num_refs=num_refs_k))
+            self.pipe.controlnet.set_attn_processor(
+                processor=utils.CrossViewAttnProcessor(self_attn_coeff=0, unet_chunk_size=2, num_refs=num_refs_k))
+
+            if k == 0:
+                batch_latents = torch.cat(all_ref_z0s, dim=0)   # [num_refs, 4, 64, 64]
+                batch_disp = torch.cat(all_ref_disps, dim=0)    # [num_refs, 3, 512, 512]
+                num_prompts = self.num_ref_views
+                keep_idx = 0  # ref_0 is the first in the batch
+            else:
+                prev_latents = torch.cat(edited_latents, dim=0)    # [k, 4, 64, 64]
+                prev_disps = torch.cat(edited_disparities, dim=0)  # [k, 3, 512, 512]
+                batch_latents = torch.cat([prev_latents, ref_z0], dim=0)  # [k+1, 4, 64, 64]
+                batch_disp = torch.cat([prev_disps, ref_disp], dim=0)    # [k+1, 3, 512, 512]
+                num_prompts = k + 1
+                keep_idx = -1  # current ref is the last in the batch
+
+            pipe_kwargs = dict(
+                prompt=[self.positive_prompt] * num_prompts,
+                negative_prompt=[self.negative_prompts] * num_prompts,
+                latents=batch_latents,
+                image=batch_disp,
+                num_inference_steps=self.num_inference_steps,
+                guidance_scale=self.guidance_scale,
+                controlnet_conditioning_scale=self.controlnet_conditioning_scale,
+                eta=self.eta,
+                output_type='pt',
+            )
+            if self.ip_adapter_image is not None:
+                pipe_kwargs['ip_adapter_image'] = self.ip_adapter_image
+            result_images = self.pipe(**pipe_kwargs).images
+
+            edited_img = result_images[keep_idx].cpu()  # [C, H, W], keep only the current ref
+
+            # Apply LangSAM mask if available (keep unedited background, same as target views)
+            if 'mask_image' in ref_data:
+                mask = torch.from_numpy(ref_data['mask_image'])  # [H, W]
+                bg_mask = 1 - mask
+                unedited_ref = ref_data['unedited_image'].permute(2, 0, 1)  # [C, H, W]
+                edited_img = edited_img * mask[None] + unedited_ref * bg_mask[None]
+
+            torchvision.utils.save_image(edited_img, f"{save_dir}/ref_{k:02d}_idx{ref_idx:04d}_edited.png")
+
+            # DDIM-invert the edited image to get a proper noisy latent at t=T
+            edited_img_hwc = edited_img.to(torch.float16).permute(1, 2, 0).to(self.pipe_device)
+            vae_latent = self.image2latent(edited_img_hwc)  # clean latent at t=0
+            self.pipe.scheduler = self.ddim_inverser
+            inversion_kwargs = dict(
+                prompt=self.positive_reverse_prompt,
+                num_inference_steps=self.num_inference_steps,
+                latents=vae_latent,
+                image=ref_disp,
+                return_dict=False,
+                guidance_scale=0,
+                output_type='latent',
+            )
+            if self.ip_adapter_image is not None:
+                inversion_kwargs['ip_adapter_image'] = self.ip_adapter_image
+            new_z0, _ = self.pipe(**inversion_kwargs)
+            new_z0 = new_z0.to(torch.float16)  # [1, 4, 64, 64]
+            self.pipe.scheduler = self.ddim_scheduler  # restore for next edit
+
+            edited_latents.append(new_z0)
+            edited_disparities.append(ref_disp)
+
+        ref_z0_torch = torch.cat(edited_latents, dim=0)      # [num_refs, 4, 64, 64]
+        ref_disp_torch = torch.cat(edited_disparities, dim=0)  # [num_refs, 3, 512, 512]
+        return ref_z0_torch, ref_disp_torch
+
+    def edit_images(self, base_dir=None):
+        '''Edit images with ControlNet and AttnAlign'''
+        self._load_ip_adapter()
+        self.pipe.scheduler = self.ddim_scheduler
+
         print("#############################")
         CONSOLE.print("Start Editing: ", style="bold yellow")
         CONSOLE.print(f"Reference views are {[j+1 for j in self.ref_indices]}", style="bold yellow")
         print("#############################")
-        ref_disparity_list = []
-        ref_z0_list = []
-        for ref_idx in self.ref_indices:
-            ref_data = deepcopy(self.datamanager.train_data[ref_idx]) 
-            ref_disparity = self.depth2disparity(ref_data['depth_image']) 
-            ref_z0 = ref_data['z_0_image']
-            ref_disparity_list.append(ref_disparity)
-            ref_z0_list.append(ref_z0) 
-            
-        ref_disparities = np.concatenate(ref_disparity_list, axis=0)
-        ref_z0s = np.concatenate(ref_z0_list, axis=0)
-        ref_disparity_torch = torch.from_numpy(ref_disparities.copy()).to(torch.float16).to(self.pipe_device)
-        ref_z0_torch = torch.from_numpy(ref_z0s.copy()).to(torch.float16).to(self.pipe_device)
+
+        ref_save_dir = f"/data/leuven/385/vsc38511/outputs/debug_edited_images/{base_dir}" if base_dir is not None else "/data/leuven/385/vsc38511/outputs/debug_edited_images"
+        os.makedirs(ref_save_dir, exist_ok=True)
+
+        # Sequentially edit reference views for consistency
+        ref_z0_torch, ref_disparity_torch = self.edit_reference_views_sequential(ref_save_dir)
+
+        # Auto-select best edited ref as IP-Adapter input if configured
+        if self.ip_adapter_image is None and self.config.auto_ip_from_refs:
+            self._auto_select_ip_from_refs(ref_save_dir)
+
+        # Reset processor for target view editing
+        if self.ip_adapter_image is not None:
+            self.pipe.unet.set_attn_processor(self._build_combined_attn_procs(self_attn_coeff=0.6, num_refs=self.num_ref_views))
+        else:
+            self.pipe.unet.set_attn_processor(
+                processor=utils.CrossViewAttnProcessor(self_attn_coeff=0.6, unet_chunk_size=2))
+        self.pipe.controlnet.set_attn_processor(
+            processor=utils.CrossViewAttnProcessor(self_attn_coeff=0, unet_chunk_size=2))
+        CONSOLE.print("Done sequential ref editing, starting target view editing", style="bold blue")
 
         # Edit images in chunk
-        for idx in range(0, len(self.datamanager.train_data), self.chunk_size): 
+        for idx in range(0, len(self.datamanager.train_data), self.chunk_size):
             chunked_data = self.datamanager.train_data[idx: idx+self.chunk_size]
             
             indices = [current_data['image_idx'] for current_data in chunked_data]
@@ -248,18 +529,27 @@ class GaussCtrlPipeline(VanillaPipeline):
             disp_ctrl_chunk = torch.concatenate((ref_disparity_torch, disparities_torch), dim=0)
             latents_chunk = torch.concatenate((ref_z0_torch, latents_torch), dim=0)
             
-            chunk_edited = self.pipe(
-                                prompt=[self.positive_prompt] * (self.num_ref_views+len(chunked_data)),
-                                negative_prompt=[self.negative_prompts] * (self.num_ref_views+len(chunked_data)),
-                                latents=latents_chunk,
-                                image=disp_ctrl_chunk,
-                                num_inference_steps=self.num_inference_steps,
-                                guidance_scale=self.guidance_scale,
-                                controlnet_conditioning_scale=self.controlnet_conditioning_scale,
-                                eta=self.eta,
-                                output_type='pt',
-                            ).images[self.num_ref_views:]
-            chunk_edited = chunk_edited.cpu() 
+            pipe_kwargs = dict(
+                prompt=[self.positive_prompt] * (self.num_ref_views+len(chunked_data)),
+                negative_prompt=[self.negative_prompts] * (self.num_ref_views+len(chunked_data)),
+                latents=latents_chunk,
+                image=disp_ctrl_chunk,
+                num_inference_steps=self.num_inference_steps,
+                guidance_scale=self.guidance_scale,
+                controlnet_conditioning_scale=self.controlnet_conditioning_scale,
+                eta=self.eta,
+                output_type='pt',
+            )
+            if self.ip_adapter_image is not None:
+                pipe_kwargs['ip_adapter_image'] = self.ip_adapter_image
+            all_edited = self.pipe(**pipe_kwargs).images
+            chunk_edited = all_edited[self.num_ref_views:].cpu()
+
+            # Save reference view reconstructions for the first chunk to verify round-trip fidelity
+            if idx == 0:
+                ref_recon = all_edited[:self.num_ref_views].cpu()
+                for ri, recon_img in enumerate(ref_recon):
+                    torchvision.utils.save_image(recon_img, f"{ref_save_dir}/ref_{ri:02d}_idx{self.ref_indices[ri]:04d}_reconstructed.png")
 
             # Insert edited images back to train data for training
             for local_idx, edited_image in enumerate(chunk_edited):
@@ -274,9 +564,7 @@ class GaussCtrlPipeline(VanillaPipeline):
                     bg_cntrl_edited_image = edited_image * mask[None] + unedited_image * bg_mask[None] 
 
                 self.datamanager.train_data[global_idx]["image"] = bg_cntrl_edited_image.permute(1,2,0).to(torch.float32) # [512 512 3]
-                save_dir = f"/data/leuven/385/vsc38511/outputs/debug_edited_images/{self.experiment_name}"
-                os.makedirs(save_dir, exist_ok=True)
-                torchvision.utils.save_image(bg_cntrl_edited_image, f"{save_dir}/edited_{global_idx:04d}.png")
+                torchvision.utils.save_image(bg_cntrl_edited_image, f"{ref_save_dir}/edited_{global_idx:04d}.png")
         print("#############################")
         CONSOLE.print("Done Editing", style="bold yellow")
         print("#############################")

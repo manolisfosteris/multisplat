@@ -9,16 +9,16 @@ def read_depth2disparity(depth_dir):
     depth_paths = sorted(glob.glob(depth_dir + '/*.npy'))
     disparity_list = []
     for depth_path in depth_paths:
-        depth = np.load(depth_path) # [512,512,1] 
-        
+        depth = np.load(depth_path) # [512,512,1]
+
         disparity = 1 / (depth + 1e-5)
         disparity_map = disparity / np.max(disparity) # 0.00233~1
         # disparity_map = disparity_map.astype(np.uint8)[:,:,0]
         disparity_map = np.concatenate([disparity_map, disparity_map, disparity_map], axis=2)
-        disparity_list.append(disparity_map[None]) 
+        disparity_list.append(disparity_map[None])
 
     detected_maps = np.concatenate(disparity_list, axis=0)
-    
+
     control = torch.from_numpy(detected_maps.copy()).float()
     return rearrange(control, 'f h w c -> f c h w')
 
@@ -33,13 +33,17 @@ def compute_attn(attn, query, key, value, video_length, ref_frame_index, attenti
     key_ref_cross = attn.head_to_batch_dim(key_ref_cross)
     value_ref_cross = attn.head_to_batch_dim(value_ref_cross)
     attention_probs = attn.get_attention_scores(query, key_ref_cross, attention_mask)
-    hidden_states_ref_cross = torch.bmm(attention_probs, value_ref_cross) 
+    hidden_states_ref_cross = torch.bmm(attention_probs, value_ref_cross)
     return hidden_states_ref_cross
 
 class CrossViewAttnProcessor:
-    def __init__(self, self_attn_coeff, unet_chunk_size=2):
+    def __init__(self, self_attn_coeff, unet_chunk_size=2, num_refs=4):
         self.unet_chunk_size = unet_chunk_size
         self.self_attn_coeff = self_attn_coeff
+        # num_refs: how many reference frames sit at the front of the batch.
+        # Cross-view attention is computed only to frames 0..num_refs-1.
+        # If num_refs > video_length, it is clamped automatically.
+        self.num_refs = num_refs
 
     def __call__(
             self,
@@ -51,7 +55,7 @@ class CrossViewAttnProcessor:
             scale=1.0,):
 
         residual = hidden_states
-        
+
         args = () if USE_PEFT_BACKEND else (scale,)
 
         if attn.spatial_norm is not None:
@@ -82,39 +86,36 @@ class CrossViewAttnProcessor:
         key = attn.to_k(encoder_hidden_states, *args)
         value = attn.to_v(encoder_hidden_states, *args)
         query = attn.head_to_batch_dim(query)
-        # Sparse Attention
+
         if not is_cross_attention:
-            ################## Perform self attention
+            # Self attention
             key_self = attn.head_to_batch_dim(key)
             value_self = attn.head_to_batch_dim(value)
             attention_probs = attn.get_attention_scores(query, key_self, attention_mask)
             hidden_states_self = torch.bmm(attention_probs, value_self)
-            #######################################
 
             video_length = key.size()[0] // self.unet_chunk_size
-            ref0_frame_index = [0] * video_length
-            ref1_frame_index = [1] * video_length
-            ref2_frame_index = [2] * video_length
-            ref3_frame_index = [3] * video_length
-            
-            hidden_states_ref0 = compute_attn(attn, query, key, value, video_length, ref0_frame_index, attention_mask)
-            hidden_states_ref1 = compute_attn(attn, query, key, value, video_length, ref1_frame_index, attention_mask)
-            hidden_states_ref2 = compute_attn(attn, query, key, value, video_length, ref2_frame_index, attention_mask)
+            num_valid_refs = min(self.num_refs, video_length)
 
-            key = rearrange(key, "(b f) d c -> b f d c", f=video_length)
-            key = key[:, ref3_frame_index]
-            key = rearrange(key, "b f d c -> (b f) d c")
-            value = rearrange(value, "(b f) d c -> b f d c", f=video_length)
-            value = value[:, ref3_frame_index]
-            value = rearrange(value, "b f d c -> (b f) d c")
+            if num_valid_refs > 0:
+                ref_hidden_states = [
+                    compute_attn(attn, query, key, value, video_length, [r] * video_length, attention_mask)
+                    for r in range(num_valid_refs)
+                ]
+                cross_hidden_states = torch.mean(torch.stack(ref_hidden_states), dim=0)
+                hidden_states = (self.self_attn_coeff * hidden_states_self
+                                 + (1 - self.self_attn_coeff) * cross_hidden_states)
+            else:
+                hidden_states = hidden_states_self
 
-        key = attn.head_to_batch_dim(key)
-        value = attn.head_to_batch_dim(value)
+            key = attn.head_to_batch_dim(key)
+            value = attn.head_to_batch_dim(value)
+        else:
+            key = attn.head_to_batch_dim(key)
+            value = attn.head_to_batch_dim(value)
+            attention_probs = attn.get_attention_scores(query, key, attention_mask)
+            hidden_states = torch.bmm(attention_probs, value)
 
-        attention_probs = attn.get_attention_scores(query, key, attention_mask)
-        hidden_states_ref3 = torch.bmm(attention_probs, value)
-        
-        hidden_states = self.self_attn_coeff * hidden_states_self + (1 - self.self_attn_coeff) * torch.mean(torch.stack([hidden_states_ref0, hidden_states_ref1, hidden_states_ref2, hidden_states_ref3]), dim=0) if not is_cross_attention else hidden_states_ref3 
         hidden_states = attn.batch_to_head_dim(hidden_states)
 
         # linear proj
