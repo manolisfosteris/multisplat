@@ -10,7 +10,6 @@ This is a fork with active modifications. The main active branch is `Seq_Ref_IP_
 - Sequential reference view editing for better multi-view consistency
 - IP-Adapter support for style guidance from a reference image
 - FVS (Farthest View Sampling) reference view selection
-- Render cache to skip re-rendering on subsequent runs
 
 ## Installation
 
@@ -36,17 +35,7 @@ ns-train splatfacto --output-dir unedited_models --experiment-name bear nerfstud
 
 **Run GaussCtrl editing (full pipeline):**
 ```bash
-ns-train gaussctrl --load-checkpoint {path/to/step-000029999.ckpt} --experiment-name EXPERIMENT_NAME --output-dir outputs --pipeline.datamanager.data {path/to/data} --pipeline.edit_prompt "YOUR EDIT PROMPT" --pipeline.reverse_prompt "DESCRIPTION OF UNEDITED SCENE" --pipeline.guidance_scale 5 --pipeline.chunk_size 1 --pipeline.langsam_obj 'OBJECT' --pipeline.cache_dir {path/to/cache} --pipeline.ip_adapter_image_path {path/to/ref.webp} --pipeline.ip_adapter_scale 0.6
-```
-
-**Run diffusion editing only (no 3DGS, P100-compatible):**
-```bash
-python scripts/edit_from_cache.py --cache_dir {path/to/cache} --output_dir {path/to/output} --edit_prompt "YOUR EDIT PROMPT" --ip_adapter_image_path {path/to/ref.webp} --ip_adapter_scale 0.6 --langsam_obj OBJECT --guidance_scale 5 --chunk_size 1
-```
-
-**Retrain 3DGS from pre-edited images (V100 required):**
-```bash
-python scripts/retrain_from_edited.py --load_checkpoint {path/to/step-000029999.ckpt} --edited_images_dir {path/to/edited/images} --data {path/to/data} --cache_dir {path/to/cache} --experiment_name EXPERIMENT_NAME --output_dir {path/to/output}
+ns-train gaussctrl --load-checkpoint {path/to/step-000029999.ckpt} --experiment-name EXPERIMENT_NAME --output-dir outputs --pipeline.datamanager.data {path/to/data} --pipeline.edit_prompt "YOUR EDIT PROMPT" --pipeline.reverse_prompt "DESCRIPTION OF UNEDITED SCENE" --pipeline.guidance_scale 5 --pipeline.chunk_size 1 --pipeline.langsam_obj 'OBJECT' --pipeline.ip_adapter_image_path {path/to/ref.webp} --pipeline.ip_adapter_scale 0.6
 ```
 
 **Render:**
@@ -68,7 +57,7 @@ The codebase is a NeRFStudio plugin. Entry point registered via `pyproject.toml`
 
 **Execution flow** (`gc_trainer.py:GaussCtrlTrainer.setup`):
 1. Load pretrained splatfacto checkpoint
-2. `pipeline.render_reverse()` — render all training views, run DDIM inversion to get latent `z_0` per view; optionally run LangSAM to get object masks; saves/loads from `cache_dir` if set
+2. `pipeline.render_reverse()` — render all training views, run DDIM inversion to get latent `z_0` per view; optionally run LangSAM to get object masks
 3. `pipeline.edit_images()` — edit all views with ControlNet+depth; edited images written back to `datamanager.train_data[idx]["image"]`
 4. Train 3DGS on edited images for `render_rate` (default 500) steps
 
@@ -80,8 +69,6 @@ The codebase is a NeRFStudio plugin. Entry point registered via `pyproject.toml`
 - `gc_datamanager.py` — `GaussCtrlDataManager`: subsamples training views (default: 40 views); stores per-view `depth_image`, `z_0_image`, `mask_image`, `unedited_image`, `image` in `self.train_data`
 - `gc_dataset.py` — `GCDataset`: loads depth `.npy` and latent `.npy` files alongside images
 - `gc_config.py` — Assembles `MethodSpecification` with all optimizer configs; registers as `"gaussctrl"` method
-- `scripts/edit_from_cache.py` — standalone diffusion editing script (no 3DGS, works on P100)
-- `scripts/retrain_from_edited.py` — standalone 3DGS retraining script from pre-edited images (requires V100)
 - `metrics/evaluate.py` — CLIP evaluation script (clip_score, clip_dir, clip_img)
 
 **Cross-view attention** (`utils.py`):
@@ -111,12 +98,9 @@ The codebase is a NeRFStudio plugin. Entry point registered via `pyproject.toml`
 - `chunk_size`: 1
 - 40 total training views by default
 - Debug edited images saved to `/data/leuven/385/vsc38511/outputs/debug_edited_images/{experiment_name}/`
-- **Render cache**: cache `.npy` files (depth, z0, rgb, mask) saved per-view as `{idx:04d}_{type}.npy`
 
 ## Paths (HPC)
 - Unedited models: `/data/leuven/385/vsc38511/unedited_models/{scene}/`
-- Render cache — bear: `/data/leuven/385/vsc38511/outputs/cache/stable_diffusion_1.5/`
-- Render cache — face: `/data/leuven/385/vsc38511/cache/stable_diffusion_1.5/face/`
 - Edited outputs: `/data/leuven/385/vsc38511/outputs/{scene}/{experiment_name}/`
 - Debug edited images: `/data/leuven/385/vsc38511/outputs/debug_edited_images/{experiment_name}/`
 - Rendered frames: `/data/leuven/385/vsc38511/render/{experiment_name}/rgb/`
