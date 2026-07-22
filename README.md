@@ -1,14 +1,9 @@
-<h1 align="center">MultiSplat</h1>
+<h1 align="center">[MultiSplat] — Multimodal Text and Image-Guided 3D Gaussian Splatting Scene Editing</h1>
 
-<p align="center">
-  <em>Multimodal text- and image-guided 3D Gaussian Splatting scene editing — multi-view consistent, no per-frame flicker.</em>
-</p>
 
-<p align="center">
-  <a href="#citation">Thesis PDF (TODO)</a> ·
-  <a href="https://github.com/manolisfosteris/multisplat/tree/Seq_Ref_IP_Adapter">Seq_Ref_IP_Adapter branch</a> ·
-  <a href="#license">License</a>
-</p>
+<p align="center"><strong>🚧 Work in progress, this repository is under active development.</strong></p>
+
+
 
 <p align="center">
   <img src="./assets/Multimodal vs Text-Only.png" alt="Multimodal vs text-only comparison" width="95%">
@@ -16,18 +11,13 @@
 
 <p align="center"><sub>Same prompt, two conditioning modes. Adding a reference image locks the visual style down, and the result stays coherent across every view of the 3D scene.</sub></p>
 
----
 
-## Abstract
-
-Text-driven 3D Gaussian Splatting (3DGS) editors are powerful but ambiguous: a single prompt like *"a polar bear in a forest"* can describe wildly different-looking scenes, and multi-view consistency degrades quickly when reference views drift from each other. **MultiSplat** couples an IP-Adapter for style control with a *sequential* reference-view editing loop on top of the GaussCtrl framework. A single reference image (or an automatically self-selected one) pins down the visual style; reference frames are edited one at a time, each attending to the already-edited earlier ones, so the target views see a coherent set of references and multi-view consistency stays tight. Reference views are chosen with Farthest View Sampling for wider geometric coverage. All contributions run on the standard Stable Diffusion 1.5 + depth-ControlNet + `splatfacto` stack — no retraining of the diffusion model, no auxiliary networks beyond the off-the-shelf IP-Adapter and ImageReward scorer.
-
----
 
 ## Overview
 
-Two ideas make text- and image-guided 3D editing practical:
+At a high level, consistent text and image-guided 3D editing in our method comes together from three parts:
 
+- **Cross-view attention.** In the diffusion editor's UNet, each view's self-attention (`attn1`) is swapped for attention over a shared set of reference frames — every patch attends to the reference views, not just its own. That coupling is what keeps the separately-edited 2D views mutually consistent, so they fuse into a clean 3D scene instead of flickering.
 - **Reference-image style control.** An IP-Adapter runs on the diffusion editor's cross-attention (`attn2`) while cross-view attention runs on `attn1` — the two mechanisms coexist without interference. A single reference image locks the target style.
 - **Sequential reference-view editing.** Reference frames are edited one at a time — ref 0 sets the style; ref 1 attends to the already-edited ref 0; ref 2 attends to edited refs 0–1; and so on. Every subsequent target view then attends to a coherent set of edited references, giving markedly tighter multi-view consistency than editing all references in one shot.
 
@@ -78,7 +68,7 @@ Sequential reference-view editing keeps the style locked across every rendered v
 4. **Sequentially edit references** with cross-view attention. Each new ref attends to the already-edited ones, DDIM-re-inverted between steps.
 5. **Pick the IP-Adapter input** — *Self-Referential Mode*: score edited refs with ImageReward and use the best one. *Multimodal Mode*: use the user-provided image directly. LangSAM (optional) segments the chosen reference.
 6. **Edit target views** in chunks with SD 1.5 + depth-ControlNet + IP-Adapter, attending to the edited reference latents on `attn1`.
-7. **Fit** `splatfacto` on the edited views for 500 more steps with L1 + LPIPS.
+7. **Fit** `splatfacto` on the edited views for 500 more steps.
 
 ---
 
@@ -159,57 +149,27 @@ data/IP-Adapter Images/
   van_gogh.jpg
 ```
 
-Point `--pipeline.ip_adapter_image_path` at any of these (or your own image) — e.g. `"data/IP-Adapter Images/panda.webp"`. These are just examples of the kind of style anchors the IP-Adapter accepts; any RGB image works. (Mind the space in the folder name — quote the path.)
+Point `--pipeline.ip_adapter_image_path` at any of these (or your own image) — e.g. `"data/IP-Adapter Images/panda.webp"`.
 
 ---
 
 ## Usage
 
-### STEP 0 — Train the base 3DGS model (prerequisite)
+### 0 — Base 3DGS model (prerequisite)
 
-MultiSplat does not build a 3D scene from scratch — it *edits* one that already exists. So before any editing you need a pretrained 3D Gaussian Splatting model of your scene. This step trains that model with NeRFStudio's stock `splatfacto` method (plain Gaussian Splatting, no editing). It's a **one-time cost per scene**: once you have the checkpoint, you can run as many edits on it as you like.
+Train a `splatfacto` model on your scene. This is a one-time cost per scene; the editor works from the pretrained checkpoint.
 
 ```bash
 ns-train splatfacto --output-dir unedited_models --experiment-name my_scene nerfstudio-data --data data/my_scene
 ```
-
-**What this command does:** it optimizes a set of 3D Gaussians to reproduce your input photographs, for `splatfacto`'s default 30,000 steps, and periodically saves checkpoints. When it finishes you have a `.ckpt` file that the MultiSplat editor loads in the next step. (On the very first run in a fresh env, the first step pauses a minute or two to JIT-compile gsplat's CUDA kernels — this is normal and only happens once.)
-
-**The flags, one by one:**
-
-| Part | What it does |
-|---|---|
-| `ns-train splatfacto` | The NeRFStudio training entry point, told to use the `splatfacto` method (vanilla 3D Gaussian Splatting). This produces the *unedited* scene. |
-| `--output-dir unedited_models` | Root folder for results, **created in your current working directory** if it doesn't exist. Everything from this run is written underneath it. |
-| `--experiment-name my_scene` | Names the run. It becomes a **subfolder** inside the output dir, so results land in `unedited_models/my_scene/…`. Use a name that identifies the scene (e.g. `bear`). |
-| `nerfstudio-data --data data/my_scene` | Selects the **dataparser** (`nerfstudio-data`) and points it at your scene folder via its positional `--data` argument. This is where the training images and camera poses are read from. |
-
-> **Order matters:** `--data` belongs to the `nerfstudio-data` dataparser, so it must come *after* the word `nerfstudio-data`, not before it. Flags before `nerfstudio-data` configure the trainer; the argument after it configures the dataparser.
-
-**What kind of data `--data` expects:** a scene folder in **NeRFStudio format** — RGB training images plus the camera pose for each image (intrinsics + extrinsics) in a `transforms.json`, optionally a sparse point cloud to initialize the Gaussians:
-
-```
-data/my_scene/
-  images/           # the RGB photos of the scene, taken from many viewpoints
-  transforms.json   # camera intrinsics + per-image extrinsic pose (COLMAP or manual)
-  sparse_pc.ply     # optional: sparse point cloud (COLMAP) used to seed the Gaussians
-```
-
-The six demo scenes shipped under `data/` (`bear`, `dinosaur`, `face`, `fangzhou`, `garden`, `stone_horse`) are already in this format — just point `--data` at one of them. For your own footage, generate this layout by running COLMAP through `ns-process-data` (see the [Data](#data) section above).
-
-**Where the checkpoint ends up:** NeRFStudio inserts a timestamp folder for each run, so the final checkpoint the editor needs is:
-
-```
-unedited_models/my_scene/splatfacto/{TIMESTAMP}/nerfstudio_models/step-000029999.ckpt
-```
-
-Copy that exact path — it's what you pass to `--load-checkpoint` in the editing steps below.
 
 ### Multimodal Mode — text prompt + reference image
 
 ```bash
 ns-train multisplat --load-checkpoint unedited_models/my_scene/splatfacto/{TIMESTAMP}/nerfstudio_models/step-000029999.ckpt --experiment-name my_scene_edit --output-dir outputs --pipeline.datamanager.data data/my_scene --pipeline.edit_prompt "a photo of a bronze bust statue of a man" --pipeline.reverse_prompt "a photo of a man" --pipeline.guidance_scale 5 --pipeline.chunk_size 1 --pipeline.langsam_obj "man" --pipeline.ip_adapter_image_path "assets/ip_references/bronze_bust.jpeg" --pipeline.ip_adapter_scale 0.6
 ```
+
+**Segmenting the reference image (optional).** Before the reference goes into the IP-Adapter, LangSAM can cut the subject out of its background so only the subject drives the style — controlled by `--pipeline.ip_langsam_obj`. It defaults to the scene's `langsam_obj`, so set it explicitly whenever the reference holds a different object than the scene (e.g. `--pipeline.ip_langsam_obj "panda"` when steering a bear scene with a panda reference), or pass `"none"` to skip it and use the whole image.
 
 ### Self-Referential Mode — no external image
 
@@ -246,25 +206,7 @@ Reports `clip_score` (edited↔prompt), `clip_dir` (directional CLIP similarity)
 | `--pipeline.ip_langsam_obj`        | LangSAM target for the reference image (`"none"` disables) |
 | `--pipeline.ref_view_selection`    | `"fvs"` (default) or `"random"` |
 | `--pipeline.fvs_alpha`             | FVS angular-distance weight (default 1.0) |
-| `--pipeline.debug_dir`             | Where per-view edited images are written (default `outputs/debug_edited_images`) |
 
----
-
-## Results
-
-CLIP-based metrics on the standard GaussCtrl demo scenes. Baseline is the upstream GaussCtrl editor at the same random seed; `↑` means higher is better.
-
-| Scene | Edit prompt | Method | clip_score ↑ | clip_dir ↑ | clip_img ↑ |
-|---|---|---|---|---|---|
-| bear | polar bear in the forest | GaussCtrl                     | TODO | TODO | TODO |
-| bear | polar bear in the forest | MultiSplat (Multimodal)       | TODO | TODO | TODO |
-| bear | polar bear in the forest | MultiSplat (Self-Referential) | TODO | TODO | TODO |
-| face | bronze bust of a man     | GaussCtrl                     | TODO | TODO | TODO |
-| face | bronze bust of a man     | MultiSplat (Multimodal)       | TODO | TODO | TODO |
-
-Ablations on the contribution of each component (sequential-ref editing, IP-Adapter, FVS, cross-view attention) are reported in the thesis (TODO: link).
-
----
 
 ## Repository tour
 
@@ -280,25 +222,11 @@ Ablations on the contribution of each component (sequential-ref editing, IP-Adap
 
 ---
 
-## Citation
-
-If you use MultiSplat, please cite:
-
-```bibtex
-@mastersthesis{fosteris2026multisplat,
-  title  = {MultiSplat: Multimodal Text and Image-Guided 3D Gaussian Splatting Editing},
-  author = {Fosteris, Manolis},
-  school = {TODO},
-  year   = {2026},
-  note   = {TODO: thesis URL}
-}
-```
-
 ---
 
 ## Acknowledgments
 
-MultiSplat builds directly on [GaussCtrl](https://github.com/ActiveVisionLab/gaussctrl) (Wu et al., ECCV 2024) — the render→invert→edit→retrain pipeline, the cross-view attention formulation, and the demo scenes come from that work.
+MultiSplat extends the work of [GaussCtrl](https://github.com/ActiveVisionLab/gaussctrl) (Wu et al., ECCV 2024).
 
 ```bibtex
 @inproceedings{wu2024gaussctrl,
