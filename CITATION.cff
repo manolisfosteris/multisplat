@@ -1,0 +1,43 @@
+cff-version: 1.2.0
+message: "If you use MultiSplat in your research, please cite the thesis below and the GaussCtrl paper it builds on."
+title: "MultiSplat: Multimodal Text and Image-Guided 3D Gaussian Splatting Editing"
+type: software
+version: "0.1.0"
+date-released: 2026-07-22
+url: "https://github.com/manolisfosteris/multisplat"
+license: BSD-3-Clause
+authors:
+  - family-names: "Fosteris"
+    given-names: "Manolis"
+preferred-citation:
+  type: thesis
+  thesis-type: "Master's thesis"
+  title: "MultiSplat: Multimodal Text and Image-Guided 3D Gaussian Splatting Editing"
+  authors:
+    - family-names: "Fosteris"
+      given-names: "Manolis"
+  # TODO: fill in the fields below before final publication
+  institution:
+    name: "TODO"
+  year: 2026
+  url: "TODO"
+references:
+  - type: conference-paper
+    title: "GaussCtrl: Multi-View Consistent Text-Driven 3D Gaussian Splatting Editing"
+    authors:
+      - family-names: "Wu"
+        given-names: "Jing"
+      - family-names: "Bian"
+        given-names: "Jia-Wang"
+      - family-names: "Li"
+        given-names: "Xinghui"
+      - family-names: "Wang"
+        given-names: "Guangrun"
+      - family-names: "Reid"
+        given-names: "Ian"
+      - family-names: "Torr"
+        given-names: "Philip"
+      - family-names: "Prisacariu"
+        given-names: "Victor Adrian"
+    collection-title: "European Conference on Computer Vision (ECCV)"
+    year: 2024
