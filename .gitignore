@@ -34,3 +34,6 @@ test.sh
 test.py
 requirements-old.txt
 environment.yml
+
+# Local Claude Code guidance — not published
+CLAUDE.md
