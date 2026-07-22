@@ -19,15 +19,23 @@ Two operating modes:
 See `README.md` for the full recipe. Short version:
 
 ```bash
-conda create -n multisplat python=3.8
+conda create -n multisplat python=3.10
 conda activate multisplat
-conda install cuda -c nvidia/label/cuda-11.8.0
+conda install cuda-nvcc cuda-cudart-dev cuda-cccl -c nvidia/label/cuda-11.8.0  # nvcc for gsplat JIT; torch ships its own CUDA runtime
+conda install ffmpeg -c conda-forge   # video encoding for ns-multisplat-render camera-path
+pip install torch==2.10.0 torchvision==0.25.0
 pip install nerfstudio==1.0.0
 pip install gsplat==0.1.3
-pip install -U git+https://github.com/luca-medeiros/lang-segment-anything.git
-pip install -r requirements.txt
+pip install "git+https://github.com/luca-medeiros/lang-segment-anything.git@918043ed4666eea04da88aa179eb8d27ef4b1a1d"  # BEFORE requirements.txt
+pip install -r requirements.txt   # pins transformers/huggingface_hub/diffusers back down
 pip install -e .
 ```
+
+Gotchas (all learned from a clean rebuild):
+- No `tiny-cuda-nn` (splatfacto/gsplat-based); `groundingdino`/`segment-anything` not needed (pinned lang-sam uses SAM-2).
+- Full `cuda` metapackage clobbers on recent conda → install the minimal `cuda-nvcc cuda-cudart-dev cuda-cccl`.
+- lang-sam must precede `requirements.txt` (it pulls a newer transformers/huggingface_hub that breaks diffusers 0.26.0).
+- `huggingface_hub==0.25.2` (in requirements.txt): diffusers 0.26.0 needs the `cached_download` symbol removed in hub 0.26.
 
 Verify: `ns-train -h` — `multisplat` must appear in the method list.
 
