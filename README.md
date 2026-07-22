@@ -45,6 +45,12 @@ Feed the system any reference image and a matching text prompt — the entire 3D
 Sequential reference-view editing keeps the style locked across every rendered viewpoint.
 
 <p align="center">
+  <img src="./assets/Original_Scenes.png" alt="Original unedited scenes" width="95%">
+</p>
+
+<p align="center"><sub>The original scenes, rendered from the unedited 3DGS models — the starting point for the edits below.</sub></p>
+
+<p align="center">
   <img src="./assets/Multimodal Experiments.png" alt="Picasso and Van Gogh style edits across six views" width="95%">
 </p>
 
@@ -247,7 +253,3 @@ Additional third-party components:
 - **lang-segment-anything** — text-prompted masking of scene and reference images ([Medeiros](https://github.com/luca-medeiros/lang-segment-anything)).
 
 ---
-
-## License
-
-_TODO — license to be added._
