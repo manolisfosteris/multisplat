@@ -107,4 +107,4 @@ NeRFStudio plugin. Entry point registered via `pyproject.toml` at `multisplat.co
 - `ref_view_num`: 4 reference frames (FVS by default)
 - `chunk_size`: 1
 - 40 total training views by default
-- Debug images: `{--pipeline.debug_dir}/{experiment_name}/` (default `outputs/debug_edited_images/{experiment_name}/`)
+- Debug images: written to `outputs/debug_edited_images/{experiment_name}/` **only in Self-Referential Mode** (`auto_ip_from_refs`), because `_auto_select_ip_from_refs` reads the edited refs back from disk to score them with ImageReward. The folder is deleted at the end of `edit_images`. Multimodal Mode writes nothing.

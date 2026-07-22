@@ -15,6 +15,7 @@
 """MultiSplat Pipeline and trainer"""
 
 import os
+import shutil
 from dataclasses import dataclass, field
 from itertools import cycle
 from typing import Optional, Type, List
@@ -130,8 +131,6 @@ class MultiSplatPipelineConfig(VanillaPipelineConfig):
     """Reference view selection strategy: 'random' or 'fvs'"""
     fvs_alpha: float = 1.0
     """Scaling factor for photogrammetric (angular) distance in FVS"""
-    debug_dir: str = "outputs/debug_edited_images"
-    """Directory where edited reference / target views are written for inspection"""
 
 
 class MultiSplatPipeline(VanillaPipeline):
@@ -421,7 +420,8 @@ class MultiSplatPipeline(VanillaPipeline):
                 unedited_ref = ref_data['unedited_image'].permute(2, 0, 1)  # [C, H, W]
                 edited_img = edited_img * mask[None] + unedited_ref * bg_mask[None]
 
-            torchvision.utils.save_image(edited_img, f"{save_dir}/ref_{k:02d}_idx{ref_idx:04d}_edited.png")
+            if save_dir is not None:
+                torchvision.utils.save_image(edited_img, f"{save_dir}/ref_{k:02d}_idx{ref_idx:04d}_edited.png")
 
             # DDIM-invert the edited image to get a proper noisy latent at t=T
             edited_img_hwc = edited_img.to(torch.float16).permute(1, 2, 0).to(self.pipe_device)
@@ -451,10 +451,16 @@ class MultiSplatPipeline(VanillaPipeline):
 
     def edit_images(self, base_dir=None):
         '''Edit images with ControlNet and AttnAlign'''
-        ref_save_dir = os.path.join(self.config.debug_dir, base_dir) if base_dir is not None else self.config.debug_dir
-        os.makedirs(ref_save_dir, exist_ok=True)
+        # Self-Referential Mode needs the edited reference views on disk so it can score them
+        # with ImageReward; Multimodal Mode has no such need. So we only write these images when
+        # auto_ip_from_refs is set, and delete the whole folder once editing is done (see below).
+        save_debug = self.config.auto_ip_from_refs
+        debug_dir = "outputs/debug_edited_images"
+        ref_save_dir = os.path.join(debug_dir, base_dir) if base_dir is not None else debug_dir
+        if save_debug:
+            os.makedirs(ref_save_dir, exist_ok=True)
 
-        self._load_ip_adapter(save_dir=ref_save_dir)
+        self._load_ip_adapter(save_dir=ref_save_dir if save_debug else None)
         self.pipe.scheduler = self.ddim_scheduler
 
         print("#############################")
@@ -463,7 +469,7 @@ class MultiSplatPipeline(VanillaPipeline):
         print("#############################")
 
         # Sequentially edit reference views for consistency
-        ref_z0_torch, ref_disparity_torch = self.edit_reference_views_sequential(ref_save_dir)
+        ref_z0_torch, ref_disparity_torch = self.edit_reference_views_sequential(ref_save_dir if save_debug else None)
 
         # Auto-select best edited ref as IP-Adapter input if configured
         if self.ip_adapter_image is None and self.config.auto_ip_from_refs:
@@ -516,7 +522,7 @@ class MultiSplatPipeline(VanillaPipeline):
             chunk_edited = all_edited[self.num_ref_views:].cpu()
 
             # Save reference view reconstructions for the first chunk to verify round-trip fidelity
-            if idx == 0:
+            if save_debug and idx == 0:
                 ref_recon = all_edited[:self.num_ref_views].cpu()
                 for ri, recon_img in enumerate(ref_recon):
                     torchvision.utils.save_image(recon_img, f"{ref_save_dir}/ref_{ri:02d}_idx{self.ref_indices[ri]:04d}_reconstructed.png")
@@ -534,7 +540,14 @@ class MultiSplatPipeline(VanillaPipeline):
                     bg_cntrl_edited_image = edited_image * mask[None] + unedited_image * bg_mask[None] 
 
                 self.datamanager.train_data[global_idx]["image"] = bg_cntrl_edited_image.permute(1,2,0).to(torch.float32) # [512 512 3]
-                torchvision.utils.save_image(bg_cntrl_edited_image, f"{ref_save_dir}/edited_{global_idx:04d}.png")
+                if save_debug:
+                    torchvision.utils.save_image(bg_cntrl_edited_image, f"{ref_save_dir}/edited_{global_idx:04d}.png")
+
+        # Self-Referential Mode only wrote these images so ImageReward could score the edited
+        # refs; now that editing is done they are no longer needed, so remove them.
+        if save_debug:
+            shutil.rmtree(ref_save_dir, ignore_errors=True)
+
         print("#############################")
         CONSOLE.print("Done Editing", style="bold yellow")
         print("#############################")
