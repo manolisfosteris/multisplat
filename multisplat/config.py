@@ -35,9 +35,9 @@ from nerfstudio.data.datamanagers.base_datamanager import VanillaDataManager, Va
 from nerfstudio.data.datamanagers.full_images_datamanager import FullImageDatamanager, FullImageDatamanagerConfig
 from nerfstudio.plugins.registry_dataparser import DataParserSpecification
 
-gaussctrl_method = MethodSpecification(
+multisplat_method = MethodSpecification(
     config=MultiSplatTrainerConfig(
-        method_name="gaussctrl",
+        method_name="multisplat",
         steps_per_eval_image=100,
         steps_per_eval_batch=0,
         steps_per_save=250,
