@@ -250,4 +250,4 @@ Additional third-party components:
 
 ## License
 
-BSD 3-Clause — see [`LICENSE.txt`](LICENSE.txt). Original GaussCtrl copyright is preserved verbatim; MultiSplat additions carry a separate copyright line.
+_TODO — license to be added._
