@@ -7,7 +7,7 @@ test.py
 
 cmd.sh
 
-gaussctrl.egg-info/
+*.egg-info/
 unedited_models/
 
 outputs/
