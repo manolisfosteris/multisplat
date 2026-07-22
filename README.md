@@ -1,172 +1,219 @@
-<p align="center">
-  
-  <h1 align="center"><strong>🎥 [ECCV 2024] GaussCtrl: Multi-View Consistent Text-Driven 3D Gaussian Splatting Editing</strong></h3>
+<h1 align="center">GaussCtrl-SeqRef-IPA</h1>
+<h3 align="center">Multimodal Text- and Image-Guided 3D Gaussian Splatting Editing</h3>
 
-  <p align="center">
-    <a href="https://jingwu2121.github.io/" class="name-link" target="_blank">Jing Wu<sup>*1</sup> </a>,
-    <a href="https://jwbian.net/" class="name-link" target="_blank">Jia-Wang Bian<sup>*2</sup> </a>,
-    <a href="https://xinghui-li.github.io/" class="name-link" target="_blank">Xinghui Li<sup>1</sup></a>,
-    <a href="https://wanggrun.github.io/" class="name-link" target="_blank">Guangrun Wang<sup>1</sup></a>,
-    <a href="https://mbzuai.ac.ae/study/faculty/ian-reid/" class="name-link" target="_blank">Ian Reid<sup>2</sup></a>,
-    <a href="https://www.robots.ox.ac.uk/~phst/" class="name-link" target="_blank">Philip Torr<sup>1</sup></a>,
-    <a href="https://www.robots.ox.ac.uk/~victor/" class="name-link" target="_blank">Victor Adrian Prisacariu<sup>1</sup></a>
-    <br>
-    * denotes equal contribution
-    <br>
-    <sup>1</sup>University of Oxford,
-    <br>
-<sup>2</sup>Mohamed bin Zayed University of Artificial Intelligence
+<p align="center">
+  <em>Edit any 3D Gaussian Splatting scene with a text prompt <strong>and</strong> a reference image — multi-view consistent, no per-frame flicker.</em>
 </p>
 
-<div align="center">
+<p align="center">
+  <a href="https://arxiv.org/abs/2403.08733"><img alt="Paper" src="https://img.shields.io/badge/Paper-arXiv-b31b1b?logo=arxiv"></a>
+  <a href="LICENSE.txt"><img alt="License" src="https://img.shields.io/badge/License-BSD-green"></a>
+  <img alt="Python" src="https://img.shields.io/badge/Python-3.8-blue?logo=python">
+  <img alt="PyTorch" src="https://img.shields.io/badge/PyTorch-2.1.2-orange?logo=pytorch">
+</p>
 
-[![Badge with Logo](https://img.shields.io/badge/arXiv-2403.08733-red?logo=arxiv)
-](https://arxiv.org/abs/2403.08733)
-[![Badge with Logo](https://img.shields.io/badge/Project-Page-blue?logo=homepage)](https://gaussctrl.active.vision/)
-[![Badge with Logo](https://img.shields.io/badge/Download-Data-cyan)](https://github.com/jingwu2121/gaussctrl/tree/main/data)
-[![Badge with Logo](https://img.shields.io/badge/BSD-License-green)](LICENSE.txt)
-</div>
+<p align="center">
+  <img src="./assets/Multimodal vs Text-Only.png" alt="Multimodal vs text-only comparison" width="95%">
+</p>
 
-![teaser](./assets/teaser.png)
+<p align="center"><sub>Same prompt, two conditioning modes. Text alone drifts — <em>"bronze bust statue"</em> paints a golden-yellow blur. Adding a reference image locks the visual style down, and the result stays coherent across every view of the 3D scene.</sub></p>
 
-## ✨ News
-- [9.4.2024] Our original results utilise stable-diffusion-v1-5 from runwayml for editing, which is now unavailable. Please change the diffusion checkpoint to other available models, e.g. `CompVis/stable-diffusion-v1-4`, by using `--pipeline.diffusion_ckpt "CompVis/stable-diffusion-v1-4"`. Reproduce our original results by using the checkpoint `--pipeline.diffusion_ckpt "jinggogogo/gaussctrl-sd15"` 
+---
 
-## ⚙️ Installation
+## Overview
 
-- Tested on CUDA11.8 + Ubuntu22.04 + NeRFStudio1.0.0 (NVIDIA RTX A5000 24G)
+3D scene editing with a text prompt is powerful but often ambiguous: the same words describe wildly different-looking objects. This project extends the GaussCtrl 3DGS editor with two ideas that together make text- and image-guided 3D editing practical:
 
-Clone the repo. 
+- **Reference-image style control.** An IP-Adapter runs on the diffusion editor's cross-attention (`attn2`) while cross-view attention runs on `attn1` — the two mechanisms coexist without interference. A single reference image locks the target style.
+- **Sequential reference-view editing.** Reference frames are edited one at a time — ref 0 sets the style; ref 1 attends to the already-edited ref 0; ref 2 attends to edited refs 0–1; and so on. Every subsequent target view then attends to a coherent set of edited references, giving markedly tighter multi-view consistency than editing all references in one shot.
+
+Two operating modes ship out of the box:
+
+- **Multimodal Mode** — you provide the reference image.
+- **Self-Referential Mode** — no external image; the system scores its own intermediate edits with [ImageReward](https://github.com/THUDM/ImageReward), picks the strongest one, and reuses it as the IP-Adapter input. The scene bootstraps its own style anchor.
+
+---
+
+## Multimodal editing in action
+
+Feed the system any reference image and a matching text prompt — the entire 3D scene is edited to match both.
+
+<p align="center">
+  <img src="./assets/Multimodal Results.png" alt="Multimodal editing examples: panda in the forest and bronze bust statue" width="95%">
+</p>
+
+<p align="center"><sub>A single reference image is enough to pin down species, material, and lighting the text prompt can only gesture at.</sub></p>
+
+---
+
+## Multi-view consistency
+
+Sequential reference-view editing keeps the style locked across every rendered viewpoint — no flickering identity between frames.
+
+<p align="center">
+  <img src="./assets/Multimodal Experiments.png" alt="Picasso and Van Gogh style edits across six views" width="95%">
+</p>
+
+<p align="center">
+  <img src="./assets/Multimodal Experiments2.png" alt="Jade horse and terracotta warrior style edits across six views" width="95%">
+</p>
+
+<p align="center"><sub>Six rendered viewpoints per row from the edited 3DGS scenes — Picasso, Van Gogh, jade horse, and terracotta warrior. All are 3D renders of the fine-tuned scene, not 2D diffusion output.</sub></p>
+
+---
+
+## How it works
+
+<p align="center">
+  <img src="./assets/pipeline.png" alt="Pipeline overview" width="95%">
+</p>
+
+1. **Render** RGB + depth for all training views from the pretrained 3DGS scene and DDIM-invert them to noisy latents.
+2. **Sample references** — pick 4 reference views by **Farthest View Sampling** (greedy spatial + angular diversity, from *NeRF Director*, Xiao et al., CVPR 2024) rather than uniform-random sampling. Wider geometric coverage feeds cross-view attention.
+3. **Segment** (optional) — [LangSAM](https://github.com/luca-medeiros/lang-segment-anything) extracts an object mask per view so edits are composited over the original background.
+4. **Sequentially edit references** with cross-view attention. Each new ref attends to the already-edited ones, DDIM-re-inverted between steps.
+5. **Pick the IP-Adapter input** — *Self-Referential Mode*: score edited refs with ImageReward and use the best one. *Multimodal Mode*: use the user-provided image directly. LangSAM (optional) segments the chosen reference.
+6. **Edit target views** in chunks with SD 1.5 + depth-ControlNet + IP-Adapter, attending to the edited reference latents on `attn1`.
+7. **Fit** `splatfacto` on the edited views for 500 more steps with L1 + LPIPS.
+
+---
+
+## Installation
+
+Tested on CUDA 11.8 + Ubuntu 22.04 + NeRFStudio 1.0.0 + NVIDIA V100 / RTX A5000 (24 GB).
+
+### Conda
+
 ```bash
-git clone https://github.com/ActiveVisionLab/gaussctrl.git
+git clone https://github.com/manolisfosteris/gaussctrl.git
 cd gaussctrl
-```
 
-### 1. NeRFStudio and Lang-SAM
-
-```bash
 conda create -n gaussctrl python=3.8
 conda activate gaussctrl
 conda install cuda -c nvidia/label/cuda-11.8.0
-```
 
-GaussCtrl is built upon NeRFStudio, follow [this link](https://docs.nerf.studio/quickstart/installation.html) to install NeRFStudio first. If you are failing to build tiny-cuda-nn, try building from scratch, see [here](https://github.com/NVlabs/tiny-cuda-nn/?tab=readme-ov-file#compilation-windows--linux). We recommend using NeRFStudio v1.0.0 with gsplat v0.1.3. 
+# Torch + tiny-cuda-nn
+pip install torch==2.1.2+cu118 torchvision==0.16.2+cu118 --extra-index-url https://download.pytorch.org/whl/cu118
+pip install ninja git+https://github.com/NVlabs/tiny-cuda-nn/#subdirectory=bindings/torch
 
-```bash
+# NeRFStudio + gsplat
 pip install nerfstudio==1.0.0
-
-# Try either of these two if one is not working
-pip install gsplat==0.1.2
 pip install gsplat==0.1.3
-```
-
-Install Lang-SAM for mask extraction. 
-
-```bash
-pip install -U git+https://github.com/luca-medeiros/lang-segment-anything.git
-
 pip install -r requirements.txt
-```
+pip install "huggingface_hub<0.24"
 
-### 2. Install GaussCtrl
-```bash 
+# Lang-SAM (specific branch, no-deps)
+cd ..
+git clone https://github.com/luca-medeiros/lang-segment-anything && cd lang-segment-anything
+git checkout fix-no_detection
+pip install --no-deps --no-build-isolation .
+pip install groundingdino-py segment-anything
+
+# This project
+cd ../gaussctrl
 pip install -e .
 ```
 
-### 3. Verify the install
-```bash
-ns-train -h
-```
+Verify: `ns-train -h`
 
-## 🗄️ Data
+If `tiny-cuda-nn` fails to build, see the [official build-from-source notes](https://github.com/NVlabs/tiny-cuda-nn/?tab=readme-ov-file#compilation-windows--linux). NeRFStudio v1.0.0 with gsplat v0.1.3 is the recommended pairing.
 
-### Use Our Preprocessed Data
-
-Our preprocessed data are under the `data` folder, where
-- `fangzhou` is from [NeRF-Art](https://github.com/cassiePython/NeRF-Art/tree/main/data/fangzhou_nature) 
-- `bear`, `face` are from [Instruct-NeRF2NeRF](https://drive.google.com/drive/folders/1v4MLNoSwxvSlWb26xvjxeoHpgjhi_s-s?usp=share_link) 
-- `garden` is from [Mip-NeRF 360](http://storage.googleapis.com/gresearch/refraw360/360_v2.zip) 
-- `stone horse` and `dinosaur` are from [BlendedMVS](https://github.com/YoYo000/BlendedMVS) 
-
-We thank these authors for their great work!
-
-### Customize Your Data
-
-We recommend to pre-process your data to 512x512, and follow [this page](https://docs.nerf.studio/quickstart/custom_dataset.html) to process your data. 
-
-## :arrow_forward: Get Started
-![Method](./assets/method.png)
-
-### 1. Train a 3DGS
-To get started, you first need to train your 3DGS model. We use `splatfacto` from NeRFStudio. 
-
-```bash 
-ns-train splatfacto --output-dir {output/folder} --experiment-name EXPEIMENT_NAME nerfstudio-data --data {path/to/your/data}
-```
-
-### 2. Edit your model
-Once you finish training the `splatfacto` model, the checkpoints will be saved to `output/folder/EXPEIMENT_NAME` folder. 
-
-Start editing your model by running:
+### Docker (fallback)
 
 ```bash
-ns-train gaussctrl --load-checkpoint {output/folder/.../nerfstudio_models/step-000029999.ckpt} --experiment-name EXPEIMENT_NAME --output-dir {output/folder} --pipeline.datamanager.data {path/to/your/data} --pipeline.edit_prompt "YOUR PROMPT" --pipeline.reverse_prompt "PROMPT TO DESCRIBE THE UNEDITED SCENE" --pipeline.guidance_scale 5 --pipeline.chunk_size {batch size of images during editing} --pipeline.langsam_obj 'OBJECT TO BE EDITED' 
+docker pull jingwu2121/gaussctrl:latest
+docker run -it --gpus all --shm-size=16g -p 7007:7007 -v /path/to/gaussctrl:/workspace/gaussctrl jingwu2121/gaussctrl:latest /bin/bash
 ```
 
-Please note that the Lang-SAM is optional here. If you are editing the environment, please remove this argument. 
+Inside the container:
 
 ```bash
-ns-train gaussctrl --load-checkpoint {output/folder/.../nerfstudio_models/step-000029999.ckpt} --experiment-name EXPEIMENT_NAME --output-dir {output/folder} --pipeline.datamanager.data {path/to/your/data} --pipeline.edit_prompt "YOUR PROMPT" --pipeline.reverse_prompt "PROMPT TO DESCRIBE THE UNEDITED SCENE" --pipeline.guidance_scale 5 --pipeline.chunk_size {batch size of images during editing} 
+conda activate gaussctrl
+cd /workspace/gaussctrl
 ```
 
-Here, `--pipeline.guidance_scale` denotes the classifier-free guidance used when editing the images. `--pipeline.chunk_size` denotes the number of images edited together during 1 batch. We are using **NVIDIA RTX A5000** GPU (24G), and the maximum chunk size is 3. (~22G) 
+---
 
-Control the number of reference views using `--pipeline.ref_view_num`, by default, it is set to 4. 
+## Usage
 
-### Small Tips
-- If your editings are not as expected, please check the images edited by ControlNet. 
-- Empirically, conditioning your editing on the good ControlNet editing views is very helpful, which means choosing those good ControlNet editing views as reference views is better. 
+### 0 — Base 3DGS model (prerequisite)
 
-## :wrench: Reproduce Our Results
+Train a `splatfacto` model on your scene:
 
-Experiments in the main paper are included in the `scripts` folder. To reproduce the results, first train the `splatfacto` model. We take the `bear` case as an example here. 
 ```bash
-ns-train splatfacto --output-dir unedited_models --experiment-name bear nerfstudio-data --data data/bear
+ns-train splatfacto --output-dir unedited_models --experiment-name my_scene nerfstudio-data --data data/my_scene
 ```
 
-Then edit the 3DGS by running:
+### Multimodal Mode — text prompt + reference image
+
 ```bash
-ns-train gaussctrl --load-checkpoint unedited_models/bear/splatfacto/2024-07-10_170906/nerfstudio_models/step-000029999.ckpt --experiment-name bear --output-dir outputs --pipeline.datamanager.data data/bear --pipeline.edit_prompt "a photo of a polar bear in the forest" --pipeline.reverse_prompt "a photo of a bear statue in the forest" --pipeline.guidance_scale 5 --pipeline.chunk_size 3 --pipeline.langsam_obj 'bear' --viewer.quit-on-train-completion True 
+ns-train gaussctrl --load-checkpoint unedited_models/my_scene/splatfacto/{TIMESTAMP}/nerfstudio_models/step-000029999.ckpt --experiment-name my_scene_edit --output-dir outputs --pipeline.datamanager.data data/my_scene --pipeline.edit_prompt "a photo of a bronze bust statue of a man" --pipeline.reverse_prompt "a photo of a man" --pipeline.guidance_scale 5 --pipeline.chunk_size 1 --pipeline.langsam_obj "man" --pipeline.ip_adapter_image_path "assets/ip_references/bronze_bust.jpeg" --pipeline.ip_adapter_scale 0.6
 ```
 
-In our experiments, We sampled 40 views randomly from the entire dataset to accelerate the method, which is set in `gc_datamanager.py` by default. We split the entire set into 4 subsets, and randomly sampled 10 images in each subset split. Feel free to decrease/increase the number to see the difference by modifying `--pipeline.datamanager.subset-num` and `--pipeline.datamanager.sampled-views-every-subset`. Set `--pipeline.datamanager.load-all` to `True`, if you want to edit all the images in the dataset. 
+### Self-Referential Mode — no external image
 
-## :camera: View Results Using NeRFStudio Viewer
 ```bash
-ns-viewer --load-config {outputs/.../config.yml} 
+ns-train gaussctrl --load-checkpoint unedited_models/bear/splatfacto/{TIMESTAMP}/nerfstudio_models/step-000029999.ckpt --experiment-name polar_bear --output-dir outputs/bear --pipeline.datamanager.data data/bear --pipeline.edit_prompt "a photo of a polar bear in the forest" --pipeline.reverse_prompt "a photo of a bear in the forest" --pipeline.guidance_scale 5 --pipeline.chunk_size 1 --pipeline.langsam_obj "bear" --pipeline.auto_ip_from_refs True --pipeline.ip_adapter_scale 0.6
 ```
 
-## :movie_camera: Render Your Results
-- Render all the dataset views. 
-```bash 
-ns-gaussctrl-render dataset --load-config {outputs/.../config.yml} --output_path {render/EXPEIMENT_NAME} 
-```
+### Render the edited scene
 
-- Render a mp4 of a camera path
 ```bash
-ns-gaussctrl-render camera-path --load-config {outputs/.../config.yml} --camera-path-filename data/EXPEIMENT_NAME/camera_paths/render-path.json --output_path render/EXPEIMENT_NAME.mp4
+# Dataset viewpoints
+ns-gaussctrl-render dataset --load-config outputs/.../config.yml --output_path render/my_scene_edit
+
+# Camera-path video
+ns-gaussctrl-render camera-path --load-config outputs/.../config.yml --camera-path-filename data/my_scene/camera_paths/render-path.json --output_path render/my_scene_edit.mp4
 ```
 
-## Evaluation
-We use [this code](https://github.com/ayaanzhaque/instruct-nerf2nerf/tree/main/metrics) to evaluate our method. 
+### Evaluate
+
+```bash
+python metrics/evaluate.py --edited_dir render/my_scene_edit/rgb --original_dir render/original_my_scene/rgb --edit_prompt "..." --reverse_prompt "..."
+```
+
+### Key CLI flags
+
+| Flag | Meaning |
+|---|---|
+| `--pipeline.ip_adapter_image_path` | Reference image for IP-Adapter |
+| `--pipeline.ip_adapter_scale`      | IP-Adapter influence (0 = text only, 1 = image only) |
+| `--pipeline.auto_ip_from_refs`     | Auto-pick best edited ref as IP-Adapter input |
+| `--pipeline.langsam_obj`           | LangSAM target for the scene object |
+| `--pipeline.ip_langsam_obj`        | LangSAM target for the reference image (`"none"` disables) |
+| `--pipeline.ref_view_selection`    | `"fvs"` (default) or `"random"` |
+| `--pipeline.fvs_alpha`             | FVS angular-distance weight (default 1.0) |
+
+---
+
+## Repository tour
+
+| File | Role |
+|---|---|
+| `gaussctrl/gc_pipeline.py`    | Orchestrates render → invert → edit → train. Hosts `select_reference_views_fvs`, `_load_ip_adapter`, `_auto_select_ip_from_refs`, `_build_combined_attn_procs`, `edit_reference_views_sequential`, `edit_images`. |
+| `gaussctrl/utils.py`          | `CrossViewAttnProcessor` — custom diffusers attention processor that replaces UNet `attn1` self-attention with cross-view attention over the reference frames. |
+| `gaussctrl/gc_trainer.py`     | Extends NeRFStudio's `Trainer` with a short 500-step fine-tuning loop after editing. |
+| `gaussctrl/gc_datamanager.py` | Subsamples 40 training views; stores per-view depth / z₀ latent / mask / unedited / edited image. |
+| `gaussctrl/gc_config.py`      | Registers `"gaussctrl"` as a NeRFStudio method. |
+| `metrics/evaluate.py`         | CLIP evaluation (`clip_score`, `clip_dir`, `clip_img`). |
+
+---
 
 ## Citation
-If you find this code or find the paper useful for your research, please consider citing:
-```
+
+Please cite the original GaussCtrl paper if you use this work:
+
+```bibtex
 @article{gaussctrl2024,
-author = {Wu, Jing and Bian, Jia-Wang and Li, Xinghui and Wang, Guangrun and Reid, Ian and Torr, Philip and Prisacariu, Victor},
-title = {{GaussCtrl: Multi-View Consistent Text-Driven 3D Gaussian Splatting Editing}},
-journal = {ECCV},
-year = {2024},
+  author  = {Wu, Jing and Bian, Jia-Wang and Li, Xinghui and Wang, Guangrun and Reid, Ian and Torr, Philip and Prisacariu, Victor},
+  title   = {{GaussCtrl: Multi-View Consistent Text-Driven 3D Gaussian Splatting Editing}},
+  journal = {ECCV},
+  year    = {2024}
 }
 ```
+
+Built with [NeRFStudio](https://docs.nerf.studio/), [gsplat](https://github.com/nerfstudio-project/gsplat), [IP-Adapter](https://github.com/tencent-ailab/IP-Adapter), [ImageReward](https://github.com/THUDM/ImageReward), and [lang-segment-anything](https://github.com/luca-medeiros/lang-segment-anything). Reference-view selection follows *NeRF Director* (Xiao et al., CVPR 2024).
+
+## License
+
+BSD — see [`LICENSE.txt`](LICENSE.txt).
