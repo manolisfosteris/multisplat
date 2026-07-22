@@ -43,9 +43,9 @@ from nerfstudio.data.datamanagers.full_images_datamanager import (
     _undistort_image
 )
 from nerfstudio.data.datamanagers.base_datamanager import DataManager, DataManagerConfig, TDataset
-from gaussctrl.gc_dataset import GCDataset
+from multisplat.gc_dataset import GCDataset
 from nerfstudio.data.datasets.base_dataset import InputDataset
-from gaussctrl import utils
+from multisplat import utils
 
 
 
