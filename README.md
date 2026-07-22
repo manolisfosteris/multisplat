@@ -148,6 +148,7 @@ For **Multimodal Mode** you also supply a single reference image that pins down 
 
 ```
 data/IP-Adapter Images/
+  bronze_bust.jfif
   panda.webp
   dragon_with_wings.jpeg
   picasso.jpg
@@ -172,7 +173,7 @@ ns-train splatfacto --output-dir unedited_models --experiment-name my_scene nerf
 ### Multimodal Mode — text prompt + reference image
 
 ```bash
-ns-train multisplat --load-checkpoint unedited_models/my_scene/splatfacto/{TIMESTAMP}/nerfstudio_models/step-000029999.ckpt --experiment-name my_scene_edit --output-dir outputs --pipeline.datamanager.data data/my_scene --pipeline.edit_prompt "a photo of a bronze bust statue of a man" --pipeline.reverse_prompt "a photo of a man" --pipeline.guidance_scale 5 --pipeline.chunk_size 1 --pipeline.langsam_obj "man" --pipeline.ip_adapter_image_path "assets/ip_references/bronze_bust.jpeg" --pipeline.ip_adapter_scale 0.6
+ns-train multisplat --load-checkpoint unedited_models/my_scene/splatfacto/{TIMESTAMP}/nerfstudio_models/step-000029999.ckpt --experiment-name my_scene_edit --output-dir outputs --pipeline.datamanager.data data/my_scene --pipeline.edit_prompt "a photo of a bronze bust statue of a man" --pipeline.reverse_prompt "a photo of a man" --pipeline.guidance_scale 5 --pipeline.chunk_size 1 --pipeline.langsam_obj "man" --pipeline.ip_adapter_image_path "data/IP-Adapter Images/bronze_bust.jfif" --pipeline.ip_adapter_scale 0.6
 ```
 
 **Segmenting the reference image (optional).** Before the reference goes into the IP-Adapter, LangSAM can cut the subject out of its background so only the subject drives the style — controlled by `--pipeline.ip_langsam_obj`. It defaults to the scene's `langsam_obj`, so set it explicitly whenever the reference holds a different object than the scene (e.g. `--pipeline.ip_langsam_obj "panda"` when steering a bear scene with a panda reference), or pass `"none"` to skip it and use the whole image.
@@ -253,3 +254,7 @@ Additional third-party components:
 - **lang-segment-anything** — text-prompted masking of scene and reference images ([Medeiros](https://github.com/luca-medeiros/lang-segment-anything)).
 
 ---
+
+## License
+
+BSD 3-Clause — see [`LICENSE.txt`](LICENSE.txt). Original GaussCtrl copyright is preserved verbatim; MultiSplat additions carry a separate copyright line.
