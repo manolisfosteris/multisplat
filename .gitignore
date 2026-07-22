@@ -1,20 +1,36 @@
-
-processed_data/
+# Python
 **/__pycache__/
 *.pyc
-test.sh
-test.py
-
-cmd.sh
-
+*.pyo
 *.egg-info/
-unedited_models/
+build/
+dist/
+.venv/
+.env
 
+# NeRFStudio / 3DGS artifacts — heavy binary output that should not be tracked
 outputs/
+unedited_models/
+render/
 my_renders/
 mid_results/
 temp/
-render/
+processed_data/
 
+# Checkpoints, point clouds, splats
+*.ckpt
+*.pt
+*.pth
+*.pkl
+# NOTE: sparse_pc.ply files under data/ are intentionally tracked;
+# rely on `git add` being explicit rather than a blanket *.ply ignore.
+
+# Experiment tracking
+wandb/
+
+# Ad-hoc / scratch
+cmd.sh
+test.sh
+test.py
 requirements-old.txt
 environment.yml
