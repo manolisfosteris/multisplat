@@ -1,5 +1,5 @@
 """
-Evaluate GaussCtrl editing results using CLIP metrics.
+Evaluate MultiSplat editing results using CLIP metrics.
 
 Usage:
     python metrics/evaluate.py \
