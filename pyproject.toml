@@ -1,5 +1,5 @@
 [project]
-name = "gaussctrl"
+name = "multisplat"
 version = "0.1.0"
 
 dependencies=[
@@ -33,10 +33,10 @@ disable = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["gaussctrl"]
+include = ["multisplat"]
 
 [project.entry-points.'nerfstudio.method_configs']
-gaussctrl = 'gaussctrl.gc_config:gaussctrl_method'
+multisplat = 'multisplat.config:multisplat_method'
 
 [project.scripts]
-ns-gaussctrl-render = "gaussctrl.gc_render:entrypoint"
+ns-multisplat-render = "multisplat.render:entrypoint"
