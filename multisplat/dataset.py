@@ -13,7 +13,7 @@
 # limitations under the License.
 
 """
-GaussCtrl dataset.
+MultiSplat dataset.
 """
 
 import json
@@ -68,7 +68,7 @@ def get_depth_z_0_image_from_path(
         raise TypeError("Wrong depth type, depth files should be .npy files")
     # return torch.from_numpy(image[:, :, np.newaxis])
 
-class GCDataset(InputDataset):
+class MultiSplatDataset(InputDataset):
     """Dataset that returns images and depths. If no depths are found, then we generate them with Zoe Depth.
 
     Args:

@@ -14,7 +14,7 @@
 
 #!/usr/bin/env python
 """
-GaussCtrl Render 
+MultiSplat Render
 """
 from __future__ import annotations
 
@@ -190,7 +190,7 @@ def _render_trajectory_video(
                         max_idx = true_max_idx
 
                 # Fosteris 05/03/2026: disable autocast to prevent BFloat16/Float32 mismatch in gsplat
-                # when rendering original splatfacto checkpoints (GaussCtrlModel handles this internally,
+                # when rendering original splatfacto checkpoints (MultiSplatModel handles this internally,
                 # but SplatfactoModel does not)
                 if crop_data is not None:
                     with renderers.background_color_override_context(

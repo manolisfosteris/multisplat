@@ -13,7 +13,7 @@
 # limitations under the License.
 
 """
-Code to train GaussCtrl model
+Code to train MultiSplat model
 """
 from dataclasses import dataclass, field
 import dataclasses
@@ -40,14 +40,14 @@ TRAIN_INTERATION_OUTPUT = Tuple[torch.Tensor, Dict[str, torch.Tensor], Dict[str,
 TORCH_DEVICE = str
 
 @dataclass
-class GaussCtrlTrainerConfig(TrainerConfig):
-    """Configuration for the GaussCtrlTrainer."""
-    _target: Type = field(default_factory=lambda: GaussCtrlTrainer)
+class MultiSplatTrainerConfig(TrainerConfig):
+    """Configuration for the MultiSplatTrainer."""
+    _target: Type = field(default_factory=lambda: MultiSplatTrainer)
     steps_per_save: int = 500
     """Number of steps between saves."""
 
-class GaussCtrlTrainer(Trainer):
-    """Trainer for GaussCtrl"""
+class MultiSplatTrainer(Trainer):
+    """Trainer for MultiSplat"""
 
     def __init__(self, config: TrainerConfig, local_rank: int = 0, world_size: int = 1) -> None:
 

@@ -47,10 +47,10 @@ from nerfstudio.viewer_legacy.server.utils import three_js_perspective_camera_fo
 MAX_AUTO_RESOLUTION = 1600
 
 @dataclass
-class GaussCtrlDataParserConfig(DataParserConfig):
+class MultiSplatDataParserConfig(DataParserConfig):
     """Blender dataset parser config"""
 
-    _target: Type = field(default_factory=lambda: GaussCtrlDataParser)
+    _target: Type = field(default_factory=lambda: MultiSplatDataParser)
     """target class to instantiate"""
     data: Path = Path("data/blender/lego")
     """Directory specifying location of data."""
@@ -87,11 +87,11 @@ class GaussCtrlDataParserConfig(DataParserConfig):
     """Scales the depth values to meters. Default value is 0.001 for a millimeter to meter conversion."""
 
 @dataclass
-class GaussCtrlDataParser(DataParser):
+class MultiSplatDataParser(DataParser):
 
-    config: GaussCtrlDataParserConfig
+    config: MultiSplatDataParserConfig
 
-    def __init__(self, config: GaussCtrlDataParserConfig):
+    def __init__(self, config: MultiSplatDataParserConfig):
         super().__init__(config=config)
         self.data: Path = config.data
         self.scale_factor: float = config.scale_factor
