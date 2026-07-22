@@ -1,2 +1,6 @@
-transformers>=4.38.0
+# huggingface_hub pinned <0.26: diffusers 0.26.0 imports `cached_download`,
+# which huggingface_hub removed in 0.26.0. 0.25.2 is the last release with it.
+huggingface_hub==0.25.2
+transformers==4.44.2
 diffusers==0.26.0
+image-reward==1.5

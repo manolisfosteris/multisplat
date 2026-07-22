@@ -84,7 +84,7 @@ Sequential reference-view editing keeps the style locked across every rendered v
 
 ## Installation
 
-Tested on CUDA 11.8 + Ubuntu 22.04 + NeRFStudio 1.0.0 + NVIDIA V100 / RTX A5000 (24 GB).
+Reproduced on Linux (RHEL 9 / Ubuntu 22.04), Python 3.10, NVIDIA V100 (32 GB) / RTX A5000, driver ≥ 535. The environment pairs a conda **CUDA 11.8** toolkit — used only to provide `nvcc` for gsplat's runtime kernel compilation — with **PyTorch's own bundled CUDA 12.8** runtime. You do *not* need a matching system-wide CUDA install.
 
 ### Conda
 
@@ -92,35 +92,43 @@ Tested on CUDA 11.8 + Ubuntu 22.04 + NeRFStudio 1.0.0 + NVIDIA V100 / RTX A5000 
 git clone https://github.com/manolisfosteris/multisplat.git
 cd multisplat
 
-conda create -n multisplat python=3.8
+conda create -n multisplat python=3.10
 conda activate multisplat
-conda install cuda -c nvidia/label/cuda-11.8.0
 
-# Torch + tiny-cuda-nn
-pip install torch==2.1.2+cu118 torchvision==0.16.2+cu118 --extra-index-url https://download.pytorch.org/whl/cu118
-pip install ninja git+https://github.com/NVlabs/tiny-cuda-nn/#subdirectory=bindings/torch
+# nvcc + CUDA headers for gsplat's JIT kernel compilation (torch ships its own
+# CUDA runtime). The full `cuda` metapackage hits a libcusparse file-clobber on
+# recent conda, so install just the compile toolchain gsplat needs:
+conda install cuda-nvcc cuda-cudart-dev cuda-cccl -c nvidia/label/cuda-11.8.0
+
+# ffmpeg — required to encode rendered videos (ns-multisplat-render camera-path)
+conda install ffmpeg -c conda-forge
+
+# PyTorch — CUDA 12.8 wheels straight from PyPI (no extra index needed)
+pip install torch==2.10.0 torchvision==0.25.0
 
 # NeRFStudio + gsplat
 pip install nerfstudio==1.0.0
 pip install gsplat==0.1.3
-pip install -r requirements.txt
-pip install "huggingface_hub<0.24"
 
-# Lang-SAM (specific branch, no-deps)
-cd ..
-git clone https://github.com/luca-medeiros/lang-segment-anything && cd lang-segment-anything
-git checkout fix-no_detection
-pip install --no-deps --no-build-isolation .
-pip install groundingdino-py segment-anything
+# Lang-SAM — text-prompted segmentation (pulls in SAM-2 + the grounding model).
+# Install BEFORE requirements.txt: lang-sam drags in a newer transformers /
+# huggingface_hub that would break diffusers 0.26.0; requirements.txt pins them back.
+pip install "git+https://github.com/luca-medeiros/lang-segment-anything.git@918043ed4666eea04da88aa179eb8d27ef4b1a1d"
+
+# Diffusion + editing stack — pins transformers / huggingface_hub / diffusers / image-reward
+pip install -r requirements.txt
 
 # This project
-cd ../multisplat
 pip install -e .
 ```
 
 Verify: `ns-train -h` (you should see `multisplat` in the method list).
 
-If `tiny-cuda-nn` fails to build, see the [official build-from-source notes](https://github.com/NVlabs/tiny-cuda-nn/?tab=readme-ov-file#compilation-windows--linux). NeRFStudio v1.0.0 with gsplat v0.1.3 is the recommended pairing.
+Notes:
+- **No `tiny-cuda-nn`.** MultiSplat is `splatfacto`/`gsplat`-based; tiny-cuda-nn is only needed by NeRF-MLP methods (e.g. `nerfacto`) and is not a dependency here.
+- **First-run compile.** gsplat 0.1.3 JIT-compiles its CUDA kernels on first use — that's why the conda CUDA 11.8 toolkit (`nvcc`) is installed. The first `ns-train multisplat` invocation will pause briefly the first time to build them.
+- **lang-sam** is pinned to an exact commit for reproducibility; that commit's segmentation backend is SAM-2 (`sam2`), so `groundingdino` / `segment-anything` are *not* required.
+- **`huggingface_hub` is pinned to `0.25.2`** (see `requirements.txt`). diffusers 0.26.0 imports `cached_download`, which huggingface_hub removed in 0.26.0 — a newer hub makes `import diffusers` crash. 0.25.2 is the last release that still exports it and remains compatible with `transformers==4.44.2`.
 
 ---
 
@@ -138,17 +146,64 @@ data/my_scene/
 
 The six upstream demo scenes (`bear`, `dinosaur`, `face`, `fangzhou`, `garden`, `stone_horse`) are included pre-processed under `data/`. To use your own scene, run COLMAP through `ns-process-data` or the equivalent.
 
+### IP-Adapter reference images
+
+For **Multimodal Mode** you also supply a single reference image that pins down the target style. A handful of the reference images used in our experiments ship under:
+
+```
+data/IP-Adapter Images/
+  panda.webp
+  dragon_with_wings.jpeg
+  picasso.jpg
+  terracota.jpeg
+  van_gogh.jpg
+```
+
+Point `--pipeline.ip_adapter_image_path` at any of these (or your own image) — e.g. `"data/IP-Adapter Images/panda.webp"`. These are just examples of the kind of style anchors the IP-Adapter accepts; any RGB image works. (Mind the space in the folder name — quote the path.)
+
 ---
 
 ## Usage
 
-### 0 — Base 3DGS model (prerequisite)
+### STEP 0 — Train the base 3DGS model (prerequisite)
 
-Train a `splatfacto` model on your scene. This is a one-time cost per scene; the editor works from the pretrained checkpoint.
+MultiSplat does not build a 3D scene from scratch — it *edits* one that already exists. So before any editing you need a pretrained 3D Gaussian Splatting model of your scene. This step trains that model with NeRFStudio's stock `splatfacto` method (plain Gaussian Splatting, no editing). It's a **one-time cost per scene**: once you have the checkpoint, you can run as many edits on it as you like.
 
 ```bash
 ns-train splatfacto --output-dir unedited_models --experiment-name my_scene nerfstudio-data --data data/my_scene
 ```
+
+**What this command does:** it optimizes a set of 3D Gaussians to reproduce your input photographs, for `splatfacto`'s default 30,000 steps, and periodically saves checkpoints. When it finishes you have a `.ckpt` file that the MultiSplat editor loads in the next step. (On the very first run in a fresh env, the first step pauses a minute or two to JIT-compile gsplat's CUDA kernels — this is normal and only happens once.)
+
+**The flags, one by one:**
+
+| Part | What it does |
+|---|---|
+| `ns-train splatfacto` | The NeRFStudio training entry point, told to use the `splatfacto` method (vanilla 3D Gaussian Splatting). This produces the *unedited* scene. |
+| `--output-dir unedited_models` | Root folder for results, **created in your current working directory** if it doesn't exist. Everything from this run is written underneath it. |
+| `--experiment-name my_scene` | Names the run. It becomes a **subfolder** inside the output dir, so results land in `unedited_models/my_scene/…`. Use a name that identifies the scene (e.g. `bear`). |
+| `nerfstudio-data --data data/my_scene` | Selects the **dataparser** (`nerfstudio-data`) and points it at your scene folder via its positional `--data` argument. This is where the training images and camera poses are read from. |
+
+> **Order matters:** `--data` belongs to the `nerfstudio-data` dataparser, so it must come *after* the word `nerfstudio-data`, not before it. Flags before `nerfstudio-data` configure the trainer; the argument after it configures the dataparser.
+
+**What kind of data `--data` expects:** a scene folder in **NeRFStudio format** — RGB training images plus the camera pose for each image (intrinsics + extrinsics) in a `transforms.json`, optionally a sparse point cloud to initialize the Gaussians:
+
+```
+data/my_scene/
+  images/           # the RGB photos of the scene, taken from many viewpoints
+  transforms.json   # camera intrinsics + per-image extrinsic pose (COLMAP or manual)
+  sparse_pc.ply     # optional: sparse point cloud (COLMAP) used to seed the Gaussians
+```
+
+The six demo scenes shipped under `data/` (`bear`, `dinosaur`, `face`, `fangzhou`, `garden`, `stone_horse`) are already in this format — just point `--data` at one of them. For your own footage, generate this layout by running COLMAP through `ns-process-data` (see the [Data](#data) section above).
+
+**Where the checkpoint ends up:** NeRFStudio inserts a timestamp folder for each run, so the final checkpoint the editor needs is:
+
+```
+unedited_models/my_scene/splatfacto/{TIMESTAMP}/nerfstudio_models/step-000029999.ckpt
+```
+
+Copy that exact path — it's what you pass to `--load-checkpoint` in the editing steps below.
 
 ### Multimodal Mode — text prompt + reference image
 
