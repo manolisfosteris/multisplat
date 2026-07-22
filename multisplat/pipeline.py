@@ -31,11 +31,9 @@ from typing_extensions import Literal
 from nerfstudio.pipelines.base_pipeline import VanillaPipeline, VanillaPipelineConfig
 from nerfstudio.viewer.server.viewer_elements import ViewerNumber, ViewerText
 from diffusers.schedulers import DDIMScheduler, DDIMInverseScheduler
-from multisplat.gc_datamanager import (
-    GaussCtrlDataManagerConfig,
-)
+from .datamanager import GaussCtrlDataManagerConfig
 from diffusers.models.attention_processor import AttnProcessor
-from multisplat import utils
+from . import utils
 from nerfstudio.viewer_legacy.server.utils import three_js_perspective_camera_focal_length
 from nerfstudio.cameras.cameras import Cameras, CameraType
 from nerfstudio.utils import colormaps
