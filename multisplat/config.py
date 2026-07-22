@@ -13,7 +13,7 @@
 # limitations under the License.
 
 """
-GaussCtrl configuration file.
+MultiSplat configuration file.
 """
 from pathlib import Path
 from dataclasses import dataclass
@@ -25,19 +25,18 @@ from nerfstudio.engine.schedulers import ExponentialDecaySchedulerConfig
 from nerfstudio.plugins.types import MethodSpecification
 from nerfstudio.data.datasets.depth_dataset import DepthDataset
 
-from .datamanager import GaussCtrlDataManagerConfig, GaussCtrlDataManager
-from .model import GaussCtrlModelConfig
-from .pipeline import GaussCtrlPipelineConfig
-from .trainer import GaussCtrlTrainerConfig
-from .dataparser_ns import GaussCtrlDataParserConfig
-from .dataset import GCDataset
+from .datamanager import MultiSplatDataManagerConfig, MultiSplatDataManager
+from .model import MultiSplatModelConfig
+from .pipeline import MultiSplatPipelineConfig
+from .trainer import MultiSplatTrainerConfig
+from .dataparser_ns import MultiSplatDataParserConfig
+from .dataset import MultiSplatDataset
 from nerfstudio.data.datamanagers.base_datamanager import VanillaDataManager, VanillaDataManagerConfig
 from nerfstudio.data.datamanagers.full_images_datamanager import FullImageDatamanager, FullImageDatamanagerConfig
-from nerfstudio.plugins.registry_dataparser import DataParserSpecification    
+from nerfstudio.plugins.registry_dataparser import DataParserSpecification
 
-print("Hello HPC")
 gaussctrl_method = MethodSpecification(
-    config=GaussCtrlTrainerConfig(
+    config=MultiSplatTrainerConfig(
         method_name="gaussctrl",
         steps_per_eval_image=100,
         steps_per_eval_batch=0,
@@ -47,12 +46,12 @@ gaussctrl_method = MethodSpecification(
         save_only_latest_checkpoint=True,
         mixed_precision=False,
         gradient_accumulation_steps={"camera_opt": 100},
-        pipeline=GaussCtrlPipelineConfig(
-            datamanager=GaussCtrlDataManagerConfig(
-                _target=GaussCtrlDataManager[GCDataset],
-                dataparser=GaussCtrlDataParserConfig(load_3D_points=True,),
+        pipeline=MultiSplatPipelineConfig(
+            datamanager=MultiSplatDataManagerConfig(
+                _target=MultiSplatDataManager[MultiSplatDataset],
+                dataparser=MultiSplatDataParserConfig(load_3D_points=True,),
             ),
-            model=GaussCtrlModelConfig(),
+            model=MultiSplatModelConfig(),
         ),
         optimizers={
             "xyz": {
@@ -87,6 +86,6 @@ gaussctrl_method = MethodSpecification(
         viewer=ViewerConfig(num_rays_per_chunk=1 << 15),
         vis="viewer",
     ),
-    description="GaussCtrl",
+    description="MultiSplat: text- and image-guided 3D Gaussian Splatting editing",
 )
 

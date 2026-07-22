@@ -13,7 +13,7 @@
 # limitations under the License.
 
 """
-GaussCtrl Datamanager.
+MultiSplat Datamanager.
 """
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ from nerfstudio.data.datamanagers.full_images_datamanager import (
     _undistort_image
 )
 from nerfstudio.data.datamanagers.base_datamanager import DataManager, DataManagerConfig, TDataset
-from .dataset import GCDataset
+from .dataset import MultiSplatDataset
 from nerfstudio.data.datasets.base_dataset import InputDataset
 from . import utils
 
@@ -52,10 +52,10 @@ from . import utils
 CONSOLE = Console(width=120)
 
 @dataclass
-class GaussCtrlDataManagerConfig(FullImageDatamanagerConfig):
-    """Configuration for the GaussCtrlDataManager."""
+class MultiSplatDataManagerConfig(FullImageDatamanagerConfig):
+    """Configuration for the MultiSplatDataManager."""
 
-    _target: Type = field(default_factory=lambda: GaussCtrlDataManager)
+    _target: Type = field(default_factory=lambda: MultiSplatDataManager)
     patch_size: int = 32
     """Size of patch to sample from. If >1, patch-based sampling will be used."""
     subset_num: int = 4
@@ -66,15 +66,15 @@ class GaussCtrlDataManagerConfig(FullImageDatamanagerConfig):
     """Set it to True if you want to edit all the images in the dataset"""
 
 
-class GaussCtrlDataManager(FullImageDatamanager, Generic[TDataset]):
-    """Data manager for GaussCtrl."""
+class MultiSplatDataManager(FullImageDatamanager, Generic[TDataset]):
+    """Data manager for MultiSplat."""
 
-    config: GaussCtrlDataManagerConfig
+    config: MultiSplatDataManagerConfig
     train_dataset: TDataset
     eval_dataset: TDataset
 
     def __init__(self,
-                config: GaussCtrlDataManagerConfig,
+                config: MultiSplatDataManagerConfig,
                 device: Union[torch.device, str] = "cpu",
                 test_mode: Literal["test", "val", "inference"] = "val",
                 world_size: int = 1,
@@ -189,15 +189,15 @@ class GaussCtrlDataManager(FullImageDatamanager, Generic[TDataset]):
     def dataset_type(self) -> Type[TDataset]:
         """Returns the dataset type passed as the generic argument"""
         default: Type[TDataset] = cast(TDataset, TDataset.__default__)  # type: ignore
-        orig_class: Type[GaussCtrlDataManager] = get_orig_class(self, default=None)  # type: ignore
-        if type(self) is GaussCtrlDataManager and orig_class is None:
+        orig_class: Type[MultiSplatDataManager] = get_orig_class(self, default=None)  # type: ignore
+        if type(self) is MultiSplatDataManager and orig_class is None:
             return default
-        if orig_class is not None and get_origin(orig_class) is GaussCtrlDataManager:
+        if orig_class is not None and get_origin(orig_class) is MultiSplatDataManager:
             return get_args(orig_class)[0]
 
         # For inherited classes, we need to find the correct type to instantiate
         for base in getattr(self, "__orig_bases__", []):
-            if get_origin(base) is GaussCtrlDataManager:
+            if get_origin(base) is MultiSplatDataManager:
                 for value in get_args(base):
                     if isinstance(value, ForwardRef):
                         if value.__forward_evaluated__:
