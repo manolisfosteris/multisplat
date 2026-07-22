@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""GaussCtrl Pipeline and trainer"""
+"""MultiSplat Pipeline and trainer"""
 
 import os
 from dataclasses import dataclass, field
@@ -31,7 +31,7 @@ from typing_extensions import Literal
 from nerfstudio.pipelines.base_pipeline import VanillaPipeline, VanillaPipelineConfig
 from nerfstudio.viewer.server.viewer_elements import ViewerNumber, ViewerText
 from diffusers.schedulers import DDIMScheduler, DDIMInverseScheduler
-from .datamanager import GaussCtrlDataManagerConfig
+from .datamanager import MultiSplatDataManagerConfig
 from diffusers.models.attention_processor import AttnProcessor
 from . import utils
 from nerfstudio.viewer_legacy.server.utils import three_js_perspective_camera_focal_length
@@ -93,12 +93,12 @@ def select_reference_views_fvs(cameras, num_refs: int, alpha: float) -> List[int
 
 
 @dataclass
-class GaussCtrlPipelineConfig(VanillaPipelineConfig):
+class MultiSplatPipelineConfig(VanillaPipelineConfig):
     """Configuration for pipeline instantiation"""
 
-    _target: Type = field(default_factory=lambda: GaussCtrlPipeline)
+    _target: Type = field(default_factory=lambda: MultiSplatPipeline)
     """target class to instantiate"""
-    datamanager: GaussCtrlDataManagerConfig = GaussCtrlDataManagerConfig()
+    datamanager: MultiSplatDataManagerConfig = MultiSplatDataManagerConfig()
     """specifies the datamanager config"""
     render_rate: int = 500
     """how many gauss steps for gauss training"""
@@ -132,16 +132,18 @@ class GaussCtrlPipelineConfig(VanillaPipelineConfig):
     """Reference view selection strategy: 'random' or 'fvs'"""
     fvs_alpha: float = 1.0
     """Scaling factor for photogrammetric (angular) distance in FVS"""
+    debug_dir: str = "outputs/debug_edited_images"
+    """Directory where edited reference / target views are written for inspection"""
 
 
-class GaussCtrlPipeline(VanillaPipeline):
-    """GaussCtrl pipeline"""
+class MultiSplatPipeline(VanillaPipeline):
+    """MultiSplat pipeline"""
 
-    config: GaussCtrlPipelineConfig
+    config: MultiSplatPipelineConfig
 
     def __init__(
         self,
-        config: GaussCtrlPipelineConfig,
+        config: MultiSplatPipelineConfig,
         device: str,
         test_mode: Literal["test", "val", "inference"] = "val",
         world_size: int = 1,
@@ -191,8 +193,12 @@ class GaussCtrlPipeline(VanillaPipeline):
         self.eta = 0.0
         self.chunk_size = self.config.chunk_size
 
-    def _load_ip_adapter(self):
-        """Load IP-Adapter weights and reference image. Called after render_reverse."""
+    def _load_ip_adapter(self, save_dir: str = None):
+        """Load IP-Adapter weights and reference image. Called after render_reverse.
+
+        If save_dir is given and LangSAM segments the reference, the segmented
+        image is written to {save_dir}/ip_adapter_segmented.png for inspection.
+        """
         if not self.config.ip_adapter_image_path:
             return
         CONSOLE.print(f"Loading IP-Adapter with scale={self.config.ip_adapter_scale}", style="bold green")
@@ -212,7 +218,9 @@ class GaussCtrlPipeline(VanillaPipeline):
                 ip_array = np.array(ip_image)
                 ip_array[mask == 0] = 255  # white background
                 ip_image = Image.fromarray(ip_array)
-                ip_image.save("/data/leuven/385/vsc38511/outputs/debug_edited_images/ip_adapter_segmented.png")
+                if save_dir is not None:
+                    os.makedirs(save_dir, exist_ok=True)
+                    ip_image.save(os.path.join(save_dir, "ip_adapter_segmented.png"))
                 CONSOLE.print("IP-Adapter reference image segmented successfully", style="bold green")
             else:
                 CONSOLE.print(f"Warning: LangSAM found no '{ip_seg_obj}' in IP-Adapter image, using full image", style="bold yellow")
@@ -232,7 +240,7 @@ class GaussCtrlPipeline(VanillaPipeline):
 
         # Score with ImageReward
         import ImageReward as RM
-        reward_model = RM.load("ImageReward-v1.0", download_root="/scratch/leuven/385/vsc38511/.cache/ImageReward")
+        reward_model = RM.load("ImageReward-v1.0")
 
         best_score = float('-inf')
         best_path = ref_paths[0]
@@ -479,16 +487,16 @@ class GaussCtrlPipeline(VanillaPipeline):
 
     def edit_images(self, base_dir=None):
         '''Edit images with ControlNet and AttnAlign'''
-        self._load_ip_adapter()
+        ref_save_dir = os.path.join(self.config.debug_dir, base_dir) if base_dir is not None else self.config.debug_dir
+        os.makedirs(ref_save_dir, exist_ok=True)
+
+        self._load_ip_adapter(save_dir=ref_save_dir)
         self.pipe.scheduler = self.ddim_scheduler
 
         print("#############################")
         CONSOLE.print("Start Editing: ", style="bold yellow")
         CONSOLE.print(f"Reference views are {[j+1 for j in self.ref_indices]}", style="bold yellow")
         print("#############################")
-
-        ref_save_dir = f"/data/leuven/385/vsc38511/outputs/debug_edited_images/{base_dir}" if base_dir is not None else "/data/leuven/385/vsc38511/outputs/debug_edited_images"
-        os.makedirs(ref_save_dir, exist_ok=True)
 
         # Sequentially edit reference views for consistency
         ref_z0_torch, ref_disparity_torch = self.edit_reference_views_sequential(ref_save_dir)

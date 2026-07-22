@@ -13,7 +13,7 @@
 # limitations under the License.
 
 """
-Model for GaussCtrl
+Model for MultiSplat
 """
 
 from __future__ import annotations
@@ -37,9 +37,9 @@ from gsplat.rasterize import rasterize_gaussians
 from nerfstudio.data.scene_box import OrientedBox
 
 @dataclass
-class GaussCtrlModelConfig(SplatfactoModelConfig):
-    """Configuration for the GaussCtrl."""
-    _target: Type = field(default_factory=lambda: GaussCtrlModel)
+class MultiSplatModelConfig(SplatfactoModelConfig):
+    """Configuration for the MultiSplat."""
+    _target: Type = field(default_factory=lambda: MultiSplatModel)
     use_lpips: bool = True
     """Whether to use LPIPS loss"""
     use_l1: bool = True
@@ -49,10 +49,10 @@ class GaussCtrlModelConfig(SplatfactoModelConfig):
     lpips_loss_mult: float = 1.0
     """Multiplier for LPIPS loss."""
 
-class GaussCtrlModel(SplatfactoModel):
-    """Model for GaussCtrl."""
+class MultiSplatModel(SplatfactoModel):
+    """Model for MultiSplat."""
 
-    config: GaussCtrlModelConfig
+    config: MultiSplatModelConfig
 
     def get_outputs(self, camera: Cameras) -> Dict[str, Union[torch.Tensor, List]]:
         """Takes in a Ray Bundle and returns a dictionary of outputs.
