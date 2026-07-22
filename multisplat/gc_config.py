@@ -25,13 +25,13 @@ from nerfstudio.engine.schedulers import ExponentialDecaySchedulerConfig
 from nerfstudio.plugins.types import MethodSpecification
 from nerfstudio.data.datasets.depth_dataset import DepthDataset
 
-from gaussctrl.gc_datamanager import GaussCtrlDataManagerConfig
-from gaussctrl.gc_model import GaussCtrlModelConfig
-from gaussctrl.gc_pipeline import GaussCtrlPipelineConfig
-from gaussctrl.gc_trainer import GaussCtrlTrainerConfig
-from gaussctrl.gc_datamanager import GaussCtrlDataManager
-from gaussctrl.gc_dataparser_ns import GaussCtrlDataParserConfig
-from gaussctrl.gc_dataset import GCDataset
+from multisplat.gc_datamanager import GaussCtrlDataManagerConfig
+from multisplat.gc_model import GaussCtrlModelConfig
+from multisplat.gc_pipeline import GaussCtrlPipelineConfig
+from multisplat.gc_trainer import GaussCtrlTrainerConfig
+from multisplat.gc_datamanager import GaussCtrlDataManager
+from multisplat.gc_dataparser_ns import GaussCtrlDataParserConfig
+from multisplat.gc_dataset import GCDataset
 from nerfstudio.data.datamanagers.base_datamanager import VanillaDataManager, VanillaDataManagerConfig
 from nerfstudio.data.datamanagers.full_images_datamanager import FullImageDatamanager, FullImageDatamanagerConfig
 from nerfstudio.plugins.registry_dataparser import DataParserSpecification    
