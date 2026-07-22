@@ -10,7 +10,7 @@ Usage:
     python scripts/retrain_from_edited.py \
         --load_checkpoint /data/.../nerfstudio_models/step-000029999.ckpt \
         --edited_images_dir /data/.../outputs/debug_edited_images/joker_IP_no_cross_att \
-        --data /data/.../gaussctrl-fork/data/face \
+        --data /data/.../multisplat/data/face \
         --cache_dir /data/.../cache/stable_diffusion_1.5/face \
         --experiment_name joker_IP_no_cross_att \
         --output_dir /data/.../outputs/face
@@ -27,17 +27,17 @@ from nerfstudio.configs.base_config import ViewerConfig
 from nerfstudio.engine.optimizers import AdamOptimizerConfig
 from nerfstudio.engine.schedulers import ExponentialDecaySchedulerConfig
 
-from gaussctrl.gc_datamanager import GaussCtrlDataManagerConfig, GaussCtrlDataManager
-from gaussctrl.gc_model import GaussCtrlModelConfig
-from gaussctrl.gc_pipeline import GaussCtrlPipeline, GaussCtrlPipelineConfig
-from gaussctrl.gc_trainer import GaussCtrlTrainerConfig
-from gaussctrl.gc_dataparser_ns import GaussCtrlDataParserConfig
-from gaussctrl.gc_dataset import GCDataset
+from multisplat.datamanager import MultiSplatDataManagerConfig, MultiSplatDataManager
+from multisplat.model import MultiSplatModelConfig
+from multisplat.pipeline import MultiSplatPipeline, MultiSplatPipelineConfig
+from multisplat.trainer import MultiSplatTrainerConfig
+from multisplat.dataparser_ns import MultiSplatDataParserConfig
+from multisplat.dataset import MultiSplatDataset
 
 
 def build_config(args):
-    config = GaussCtrlTrainerConfig(
-        method_name="gaussctrl",
+    config = MultiSplatTrainerConfig(
+        method_name="multisplat",
         experiment_name=args.experiment_name,
         output_dir=Path(args.output_dir),
         steps_per_eval_image=100,
@@ -48,13 +48,13 @@ def build_config(args):
         save_only_latest_checkpoint=True,
         mixed_precision=False,
         gradient_accumulation_steps={"camera_opt": 100},
-        pipeline=GaussCtrlPipelineConfig(
-            datamanager=GaussCtrlDataManagerConfig(
-                _target=GaussCtrlDataManager[GCDataset],
-                dataparser=GaussCtrlDataParserConfig(load_3D_points=True),
+        pipeline=MultiSplatPipelineConfig(
+            datamanager=MultiSplatDataManagerConfig(
+                _target=MultiSplatDataManager[MultiSplatDataset],
+                dataparser=MultiSplatDataParserConfig(load_3D_points=True),
                 data=Path(args.data),
             ),
-            model=GaussCtrlModelConfig(),
+            model=MultiSplatModelConfig(),
             cache_dir=args.cache_dir,
             render_rate=args.render_rate,
             # Diffusion params unused (editing is skipped), but required by pipeline init
@@ -134,7 +134,7 @@ def main():
     args = parser.parse_args()
 
     # Patch edit_images on the class before the trainer instantiates the pipeline
-    GaussCtrlPipeline.edit_images = make_load_edited_fn(args.edited_images_dir)
+    MultiSplatPipeline.edit_images = make_load_edited_fn(args.edited_images_dir)
 
     config = build_config(args)
     config.save_config()
