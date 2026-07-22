@@ -1,22 +1,14 @@
-<h1 align="center">GaussCtrl-SeqRef-IPA</h1>
-<h3 align="center">Multimodal Text- and Image-Guided 3D Gaussian Splatting Editing</h3>
+<h1 align="center">Multimodal Text and Image-Guided 3D Gaussian Splatting Editing</h1>
 
 <p align="center">
   <em>Edit any 3D Gaussian Splatting scene with a text prompt <strong>and</strong> a reference image — multi-view consistent, no per-frame flicker.</em>
 </p>
 
 <p align="center">
-  <a href="https://arxiv.org/abs/2403.08733"><img alt="Paper" src="https://img.shields.io/badge/Paper-arXiv-b31b1b?logo=arxiv"></a>
-  <a href="LICENSE.txt"><img alt="License" src="https://img.shields.io/badge/License-BSD-green"></a>
-  <img alt="Python" src="https://img.shields.io/badge/Python-3.8-blue?logo=python">
-  <img alt="PyTorch" src="https://img.shields.io/badge/PyTorch-2.1.2-orange?logo=pytorch">
-</p>
-
-<p align="center">
   <img src="./assets/Multimodal vs Text-Only.png" alt="Multimodal vs text-only comparison" width="95%">
 </p>
 
-<p align="center"><sub>Same prompt, two conditioning modes. Text alone drifts — <em>"bronze bust statue"</em> paints a golden-yellow blur. Adding a reference image locks the visual style down, and the result stays coherent across every view of the 3D scene.</sub></p>
+<p align="center"><sub>Same prompt, two conditioning modes. Adding a reference image locks the visual style down, and the result stays coherent across every view of the 3D scene.</sub></p>
 
 ---
 
@@ -48,7 +40,7 @@ Feed the system any reference image and a matching text prompt — the entire 3D
 
 ## Multi-view consistency
 
-Sequential reference-view editing keeps the style locked across every rendered viewpoint — no flickering identity between frames.
+Sequential reference-view editing keeps the style locked across every rendered viewpoint.
 
 <p align="center">
   <img src="./assets/Multimodal Experiments.png" alt="Picasso and Van Gogh style edits across six views" width="95%">
@@ -58,7 +50,7 @@ Sequential reference-view editing keeps the style locked across every rendered v
   <img src="./assets/Multimodal Experiments2.png" alt="Jade horse and terracotta warrior style edits across six views" width="95%">
 </p>
 
-<p align="center"><sub>Six rendered viewpoints per row from the edited 3DGS scenes — Picasso, Van Gogh, jade horse, and terracotta warrior. All are 3D renders of the fine-tuned scene, not 2D diffusion output.</sub></p>
+<p align="center"><sub>Six rendered viewpoints per row from the edited 3DGS scenes — Picasso, Van Gogh, jade horse, and terracotta warrior. All are 3D renders of the fine-tuned scene.</sub></p>
 
 ---
 
@@ -69,7 +61,7 @@ Sequential reference-view editing keeps the style locked across every rendered v
 </p>
 
 1. **Render** RGB + depth for all training views from the pretrained 3DGS scene and DDIM-invert them to noisy latents.
-2. **Sample references** — pick 4 reference views by **Farthest View Sampling** (greedy spatial + angular diversity, from *NeRF Director*, Xiao et al., CVPR 2024) rather than uniform-random sampling. Wider geometric coverage feeds cross-view attention.
+2. **Sample references** — pick 4 reference views by **Farthest View Sampling** (greedy spatial + angular diversity). Wider geometric coverage feeds cross-view attention.
 3. **Segment** (optional) — [LangSAM](https://github.com/luca-medeiros/lang-segment-anything) extracts an object mask per view so edits are composited over the original background.
 4. **Sequentially edit references** with cross-view attention. Each new ref attends to the already-edited ones, DDIM-re-inverted between steps.
 5. **Pick the IP-Adapter input** — *Self-Referential Mode*: score edited refs with ImageReward and use the best one. *Multimodal Mode*: use the user-provided image directly. LangSAM (optional) segments the chosen reference.
@@ -199,20 +191,6 @@ python metrics/evaluate.py --edited_dir render/my_scene_edit/rgb --original_dir 
 
 ---
 
-## Citation
-
-Please cite the original GaussCtrl paper if you use this work:
-
-```bibtex
-@article{gaussctrl2024,
-  author  = {Wu, Jing and Bian, Jia-Wang and Li, Xinghui and Wang, Guangrun and Reid, Ian and Torr, Philip and Prisacariu, Victor},
-  title   = {{GaussCtrl: Multi-View Consistent Text-Driven 3D Gaussian Splatting Editing}},
-  journal = {ECCV},
-  year    = {2024}
-}
-```
-
-Built with [NeRFStudio](https://docs.nerf.studio/), [gsplat](https://github.com/nerfstudio-project/gsplat), [IP-Adapter](https://github.com/tencent-ailab/IP-Adapter), [ImageReward](https://github.com/THUDM/ImageReward), and [lang-segment-anything](https://github.com/luca-medeiros/lang-segment-anything). Reference-view selection follows *NeRF Director* (Xiao et al., CVPR 2024).
 
 ## License
 
