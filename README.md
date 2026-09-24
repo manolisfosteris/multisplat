@@ -1,15 +1,66 @@
 <h1 align="center">[MultiSplat] — Multimodal Text and Image-Guided 3D Gaussian Splatting Scene Editing</h1>
 
 
-<p align="center"><strong>🚧 Work in progress, this repository is under active development.</strong></p>
 
 
 
-<p align="center">
-  <img src="./assets/Multimodal vs Text-Only.png" alt="Multimodal vs text-only comparison" width="95%">
-</p>
 
-<p align="center"><sub>Same prompt, two conditioning modes. Adding a reference image locks the visual style down, and the result stays coherent across every view of the 3D scene.</sub></p>
+<table align="center">
+  <tr>
+    <td align="center">
+      <img src="./assets/face_original_web.gif" alt="Original scene, camera orbit" width="200"><br>
+      <sub><b>Original scene</b></sub>
+    </td>
+    <td align="center">
+      <img src="./assets/face_bronze_web.gif" alt="Text-only edit, camera orbit" width="200"><br>
+      <sub><b>Text prompt only</b></sub>
+    </td>
+    <td align="center">
+      <img src="./assets/bronze_bust_ref.png" alt="IP-Adapter reference image" width="200"><br>
+      <sub><b>Reference image</b> (IP-Adapter)</sub>
+    </td>
+    <td align="center">
+      <img src="./assets/face_bronze_bust_ip_ref_web.gif" alt="Multimodal edit, camera orbit" width="200"><br>
+      <sub><b>Multimodal result</b></sub>
+    </td>
+  </tr>
+</table>
+
+<p align="center"><sub>Prompt: <i>“a photo of bronze bust statue of a man”</i>. Text alone gives a generic polished-gold bust; adding the reference image carries over its green patina, beard and drapery — and holds them across the full camera orbit of the edited 3DGS scene.</sub></p>
+
+<table align="center">
+  <tr>
+    <td align="center">
+      <img src="./assets/fangzhou_original_web.gif" alt="Original fangzhou scene, camera orbit" width="200"><br>
+      <sub><b>Original scene</b></sub>
+    </td>
+    <td align="center">
+      <img src="./assets/terracotta_ref.png" alt="IP-Adapter reference image" width="200"><br>
+      <sub><b>Reference image</b> (IP-Adapter)</sub>
+    </td>
+    <td align="center">
+      <img src="./assets/fangzhou_terracotta_web.gif" alt="Terracotta warrior edit, camera orbit" width="200"><br>
+      <sub><b>Multimodal result</b></sub>
+    </td>
+  </tr>
+</table>
+
+<p align="center"><sub>A second scene, edited to a terracotta warrior. The reference contributes the cracked clay surface, sculpted brows and ribbed collar — details no text prompt pins down on its own.</sub></p>
+
+<table align="center">
+  <tr>
+    <td align="center">
+      <img src="./assets/bear_original_web.gif" alt="Original bear statue scene, camera orbit" width="200"><br>
+      <sub><b>Original scene</b></sub>
+    </td>
+    <td align="center">
+      <img src="./assets/bear_panda_web.gif" alt="Panda edit from a text prompt alone, camera orbit" width="200"><br>
+      <sub><b>Text prompt only</b> — no IP-Adapter</sub>
+    </td>
+  </tr>
+</table>
+
+<p align="center"><sub>Text-only editing, with the IP-Adapter switched off entirely — cross-view attention alone holds the edit together, and the panda stays the same panda from every angle of the orbit.</sub></p>
 
 
 
@@ -25,40 +76,6 @@ Two operating modes ship out of the box:
 
 - **Multimodal Mode** — you provide the reference image.
 - **Self-Referential Mode** — no external image; the system scores its own intermediate edits with [ImageReward](https://github.com/THUDM/ImageReward), picks the strongest one, and reuses it as the IP-Adapter input. The scene bootstraps its own style anchor.
-
----
-
-## Multimodal editing in action
-
-Feed the system any reference image and a matching text prompt — the entire 3D scene is edited to match both.
-
-<p align="center">
-  <img src="./assets/Multimodal Results.png" alt="Multimodal editing examples: panda in the forest and bronze bust statue" width="95%">
-</p>
-
-<p align="center"><sub>A single reference image is enough to pin down species, material, and lighting the text prompt can only gesture at.</sub></p>
-
----
-
-## Multi-view consistency
-
-Sequential reference-view editing keeps the style locked across every rendered viewpoint.
-
-<p align="center">
-  <img src="./assets/Original_Scenes.png" alt="Original unedited scenes" width="95%">
-</p>
-
-<p align="center"><sub>The original scenes, rendered from the unedited 3DGS models — the starting point for the edits below.</sub></p>
-
-<p align="center">
-  <img src="./assets/Multimodal Experiments.png" alt="Picasso and Van Gogh style edits across six views" width="95%">
-</p>
-
-<p align="center">
-  <img src="./assets/Multimodal Experiments2.png" alt="Jade horse and terracotta warrior style edits across six views" width="95%">
-</p>
-
-<p align="center"><sub>Six rendered viewpoints per row from the edited 3DGS scenes — Picasso, Van Gogh, jade horse, and terracotta warrior. All are 3D renders of the fine-tuned scene.</sub></p>
 
 ---
 
