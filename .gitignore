@@ -28,6 +28,16 @@ processed_data/
 # Experiment tracking
 wandb/
 
+# Full-resolution source GIFs — only the web-optimized `*_web.gif` copies are tracked
+assets/face_original.gif
+assets/face_bronze.gif
+assets/face_bronze_bust_ip_ref.gif
+assets/fangzhou_original.gif
+assets/fangzhou_terracotta.gif
+assets/bear_original.gif
+assets/bear_panda.gif
+assets/polar_bear_main.mp4
+
 # Ad-hoc / scratch
 cmd.sh
 test.sh
