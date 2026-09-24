@@ -1,4 +1,4 @@
-<h1 align="center">[MultiSplat] — Multimodal Text and Image-Guided 3D Gaussian Splatting Scene Editing</h1>
+<h1 align="center">MultiSplat — Multimodal Text and Image-Guided 3D Gaussian Splatting Scene Editing</h1>
 
 
 
