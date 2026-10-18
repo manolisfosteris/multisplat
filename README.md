@@ -157,7 +157,7 @@ data/my_scene/
   camera_paths/         # optional: JSON files for render-path videos
 ```
 
-The six upstream demo scenes (`bear`, `dinosaur`, `face`, `fangzhou`, `garden`, `stone_horse`) are included pre-processed under `data/`. To use your own scene, run COLMAP through `ns-process-data` or the equivalent.
+Six demo scenes (`bear`, `dinosaur`, `face`, `fangzhou`, `garden`, `stone_horse`) are included pre-processed under `data/`. To use your own scene, run COLMAP through `ns-process-data` or the equivalent.
 
 ### IP-Adapter reference images
 
@@ -246,32 +246,3 @@ Reports `clip_score` (edited↔prompt), `clip_dir` (directional CLIP similarity)
 
 ---
 
----
-
-## Acknowledgments
-
-MultiSplat extends the work of [GaussCtrl](https://github.com/ActiveVisionLab/gaussctrl) (Wu et al., ECCV 2024).
-
-```bibtex
-@inproceedings{wu2024gaussctrl,
-  title     = {{GaussCtrl}: Multi-View Consistent Text-Driven {3D} {G}aussian Splatting Editing},
-  author    = {Wu, Jing and Bian, Jia-Wang and Li, Xinghui and Wang, Guangrun and Reid, Ian and Torr, Philip and Prisacariu, Victor Adrian},
-  booktitle = {European Conference on Computer Vision (ECCV)},
-  year      = {2024}
-}
-```
-
-Additional third-party components:
-
-- **NeRFStudio** — training loop, camera / dataparser abstractions ([Tancik et al., SIGGRAPH 2023](https://docs.nerf.studio/)).
-- **gsplat** — differentiable Gaussian rasterization ([Ye et al., 2024](https://github.com/nerfstudio-project/gsplat)).
-- **IP-Adapter** — image-prompt cross-attention for Stable Diffusion ([Ye et al., 2023](https://github.com/tencent-ailab/IP-Adapter)).
-- **ImageReward** — self-referential reward scoring for reference selection ([Xu et al., NeurIPS 2023](https://github.com/THUDM/ImageReward)).
-- **NeRF Director** — Farthest View Sampling algorithm ([Xiao et al., CVPR 2024](https://arxiv.org/abs/2406.08839)).
-- **lang-segment-anything** — text-prompted masking of scene and reference images ([Medeiros](https://github.com/luca-medeiros/lang-segment-anything)).
-
----
-
-## License
-
-BSD 3-Clause — see [`LICENSE.txt`](LICENSE.txt). Original GaussCtrl copyright is preserved verbatim; MultiSplat additions carry a separate copyright line.
